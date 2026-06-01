@@ -44,6 +44,9 @@ to override deployment-level things like `AUTH_ENABLED`, `DATABASE_URL`,
 or pre-seed `ODYSSEUS_ADMIN_PASSWORD` (otherwise an initial password is
 generated and printed on first boot).
 
+Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and
+pull request guidelines.
+
 ### Option 1: Docker (recommended)
 ```bash
 git clone https://github.com/pewdiepie-archdaemon/odysseus.git
