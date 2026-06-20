@@ -37481,6 +37481,7 @@ body.theme-frosted .modal {
 .ask-user-close { font-size: 15px; }
 .ask-user-question {
   margin: -2px 0 10px;
+  max-width: 70ch;
   font-size: 14px;
   font-weight: 500;
   line-height: 1.4;
@@ -37493,19 +37494,21 @@ body.theme-frosted .modal {
 }
 .ask-user-option {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   width: 100%;
-  /* Match the height of the free-text input below (.styled-prompt-input). */
-  min-height: 39px;
+  /* The global button rule fixes height at 32px. Options can contain a
+     description, so let their height follow their content instead. */
+  height: auto;
+  min-height: 44px;
   text-align: left;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
   color: var(--fg);
   font-size: 13px;
+  line-height: 1.35;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
@@ -37514,8 +37517,31 @@ body.theme-frosted .modal {
   background: color-mix(in srgb, var(--accent, var(--red)) 10%, var(--panel));
 }
 .ask-user-option:disabled { cursor: default; }
-.ask-user-option-label { font-weight: 500; }
-.ask-user-option-desc { opacity: 0.65; font-size: 12px; }
+.ask-user-option > input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+.ask-user-option-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.ask-user-option-label {
+  display: block;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.ask-user-option-desc {
+  display: block;
+  opacity: 0.72;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 /* Free-text "Other" row: input + send, on one line. */
 .ask-user-other {
   display: flex;
@@ -37529,6 +37555,15 @@ body.theme-frosted .modal {
    the input beside it (.confirm-btn won't stretch on its own). */
 .ask-user-other-send { flex-shrink: 0; white-space: nowrap; min-height: 39px; }
 .ask-user-other-send:disabled { opacity: 0.5; cursor: default; }
+@media (max-width: 520px) {
+  .ask-user-card {
+    width: calc(100% - 16px);
+    margin: 8px;
+    padding: 12px;
+  }
+  .ask-user-other { flex-direction: column; }
+  .ask-user-other-send { width: 100%; min-height: 44px; }
+}
 
 /* ── Workspace picker ───────────────────────────────────────────── */
 /* Layout (width/flex column/max-height) inherited from base .modal-content. */

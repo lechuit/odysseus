@@ -2051,16 +2051,19 @@ export function renderAskUserCard(payload, options) {
       checkbox.value = label;
       row.appendChild(checkbox);
     }
+    const optionCopy = document.createElement('span');
+    optionCopy.className = 'ask-user-option-copy';
     const labelText = document.createElement('span');
     labelText.className = 'ask-user-option-label';
     labelText.innerHTML = emojiText(label);
-    row.appendChild(labelText);
+    optionCopy.appendChild(labelText);
     if (description) {
       const descriptionText = document.createElement('span');
       descriptionText.className = 'ask-user-option-desc';
       descriptionText.innerHTML = emojiText(description);
-      row.appendChild(descriptionText);
+      optionCopy.appendChild(descriptionText);
     }
+    row.appendChild(optionCopy);
     if (!multi) {
       row.type = 'button';
       row.addEventListener('click', () => send(label));
