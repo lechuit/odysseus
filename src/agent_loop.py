@@ -2257,19 +2257,26 @@ async def stream_agent_loop(
     _MAX_INTENT_NUDGES = 2
 
     # "I said I would, then didn't" detector. The pattern that breaks debug
-    # loops on weak models (deepseek-v4-flash mid-2026): the model writes
-    # "Let me tail the output to see the error" and then ends the turn with
-    # no tool_calls. The intent is sincere but the function call gets dropped.
-    # Match the common phrasings + an action verb that maps to an available
-    # tool, so we don't nudge on harmless transitional text like "let me
-    # know what you think".
+    # loops on weak models (deepseek-v4-flash / Gemma 4): the model writes
+    # "Let me tail the output" or "Voy a reintentar la lectura" and then ends
+    # the turn with no tool_calls. The intent is sincere but the function call
+    # gets dropped. Match common English + Spanish phrasings and an action verb
+    # that maps to an available tool, so harmless transitional text such as
+    # "let me know what you think" / "voy a explicarlo" is not nudged.
     _INTENT_RE = re.compile(
         r"(?:^|\n)\s*(?:let me|i'?ll|i will|i need to|we need to|need to|"
-        r"i should|we should|i must|we must|going to|let's)\s+"
-        r"(?:tail|check|investigate|look at|see|tail|read|fetch|inspect|"
+        r"i should|we should|i must|we must|going to|let's|"
+        r"voy a|vamos a|necesito|necesitamos|debo|debemos|tengo que|"
+        r"tenemos que|déjame|dejame|permíteme|permiteme)\s+"
+        r"(?:tail|check|investigate|look at|see|read|fetch|inspect|"
         r"verify|diagnose|examine|debug|capture|grab|pull|view|run|call|"
         r"trigger|launch|start|kick off|stop|kill|restart|adopt|serve|"
-        r"register|adopt|list|search|find|query|hit|ping|test|use|perform|do)"
+        r"register|list|search|find|query|hit|ping|test|use|perform|do|"
+        r"reintentar|intentar|comprobar|revisar|investigar|mirar|ver|leer|"
+        r"obtener|inspeccionar|verificar|diagnosticar|examinar|depurar|"
+        r"capturar|descargar|consultar|ejecutar|llamar|activar|iniciar|"
+        r"detener|reiniciar|adoptar|servir|registrar|listar|buscar|"
+        r"encontrar|usar|realizar|hacer)"
         r"\b[^.\n]{0,140}",
         re.IGNORECASE,
     )
