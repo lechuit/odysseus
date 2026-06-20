@@ -95,3 +95,15 @@ def test_frontend_uses_one_renderer_for_live_and_restored_cards():
     assert "export function renderAskUserCard" in renderer
     assert "renderAskUserCard(pendingAskUser" in renderer
     assert "if (role === 'user') removeAskUserCards(box)" in renderer
+
+
+def test_ask_user_options_expand_for_descriptions():
+    renderer = (ROOT / "static" / "js" / "chatRenderer.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert "optionCopy.className = 'ask-user-option-copy'" in renderer
+    assert ".ask-user-option-copy {" in styles
+    option_rule = styles.split(".ask-user-option {", 1)[1].split("}", 1)[0]
+    assert "height: auto" in option_rule
+    assert "min-height: 44px" in option_rule
+    assert "flex-wrap: wrap" not in option_rule
