@@ -138,6 +138,140 @@ def test_bash_too_many_segments_asks(monkeypatch):
     assert "too complex" in decision.reason
 
 
+def test_bash_path_constraints_allow_workspace_read(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hello", encoding="utf-8")
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat README.md", session_id="s-path-ok")
+
+    assert decision.behavior == "passthrough"
+
+
+def test_bash_path_constraints_ask_for_sensitive_read(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat .ssh/config", session_id="s-sensitive-read")
+
+    assert decision.behavior == "ask"
+    assert "protected path" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_outside_workspace_read(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat ../outside.txt", session_id="s-outside-read")
+
+    assert decision.behavior == "ask"
+    assert "outside the active workspace" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_outside_workspace_redirection(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "echo ok > ../outside.txt", session_id="s-outside-write")
+
+    assert decision.behavior == "ask"
+    assert "outside the active workspace" in decision.reason
+
+
+def test_bash_path_constraints_handle_double_dash_sensitive_path(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "rm -- -/../.env", session_id="s-doubledash")
+
+    assert decision.behavior == "ask"
+    assert "protected path" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_tee_to_protected_path(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission(
+        "bash",
+        "printf x | tee .github/workflows/ci.yml",
+        session_id="s-tee-protected",
+    )
+
+    assert decision.behavior == "ask"
+    assert "protected path" in decision.reason
+
+
+def test_bash_path_constraints_do_not_treat_grep_pattern_as_path(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hello", encoding="utf-8")
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission(
+        "bash",
+        "grep -e ../not-a-path README.md",
+        session_id="s-grep-pattern",
+    )
+
+    assert decision.behavior == "passthrough"
+
+
 def test_builtin_bash_policy_asks_for_mutation(monkeypatch):
     from src import operation_permissions as op
 
@@ -335,6 +469,34 @@ async def test_execute_tool_block_asks_for_builtin_bash_risk(monkeypatch):
     assert desc == "bash: permission required"
     assert result["exit_code"] == 0
     assert result["ask_user"]["permission_request"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_block_asks_for_bash_path_outside_workspace(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.agent_tools import ToolBlock
+    from src.tool_execution import execute_tool_block
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "interactive_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    desc, result = await execute_tool_block(
+        ToolBlock("bash", "cat ../outside.txt"),
+        owner="admin",
+        session_id="s-bash-workspace-path",
+        workspace=str(workspace),
+    )
+
+    assert desc == "bash: permission required"
+    assert result["exit_code"] == 0
+    assert result["ask_user"]["permission_request"] is True
+    assert "outside the active workspace" in result["ask_user"]["question"]
 
 
 @pytest.mark.asyncio

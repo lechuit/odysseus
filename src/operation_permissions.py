@@ -762,6 +762,7 @@ _SHELL_WRAPPERS = {
 }
 _MAX_BASH_SEGMENTS_FOR_PERMISSION = 50
 _OUTPUT_REDIRECT_RE = re.compile(r"(?:^|\s)\d*>>?\s*(?!&\d)(?P<target>[^\s;|&]+)")
+_INPUT_REDIRECT_RE = re.compile(r"(?:^|\s)\d*<\s*(?!<)(?P<target>[^\s;|&]+)")
 _SENSITIVE_SHELL_PATH_RE = re.compile(
     r"(^|/|\$home/|~/)"
     r"("
@@ -773,6 +774,54 @@ _SENSITIVE_SHELL_PATH_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_BASH_PATH_COMMANDS = {
+    "awk",
+    "base64",
+    "cat",
+    "column",
+    "cp",
+    "cut",
+    "diff",
+    "file",
+    "find",
+    "grep",
+    "head",
+    "hexdump",
+    "ln",
+    "ls",
+    "md5sum",
+    "mkdir",
+    "mv",
+    "nl",
+    "od",
+    "paste",
+    "rg",
+    "rm",
+    "rmdir",
+    "sed",
+    "sha1sum",
+    "sha256sum",
+    "sort",
+    "stat",
+    "strings",
+    "tail",
+    "tee",
+    "touch",
+    "uniq",
+    "wc",
+}
+_BASH_WRITE_PATH_COMMANDS = {"cp", "ln", "mkdir", "mv", "rm", "rmdir", "tee", "touch"}
+_BASH_GLOB_CHARS = re.compile(r"[*?\[\]{}]")
+_BASH_SHELL_EXPANSION_RE = re.compile(r"(\$\(|\$\{|\$\[|`)")
+_BASH_DEVICE_PATHS = {
+    "/dev/null",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/proc/self/fd/0",
+    "/proc/self/fd/1",
+    "/proc/self/fd/2",
+}
 
 
 def _split_shell_segments(command: str) -> List[str]:
@@ -795,6 +844,34 @@ def _redirection_targets_sensitive_path(segment: str) -> bool:
     return False
 
 
+def _redirection_targets(segment: str, *, output: bool) -> List[str]:
+    regex = _OUTPUT_REDIRECT_RE if output else _INPUT_REDIRECT_RE
+    targets: List[str] = []
+    for match in regex.finditer(segment or ""):
+        target = (match.group("target") or "").strip().strip("'\"")
+        if target:
+            targets.append(target)
+    return targets
+
+
+def _strip_redirection_tokens(parts: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    skip_next = False
+    for token in parts:
+        if skip_next:
+            skip_next = False
+            continue
+        if re.fullmatch(r"\d*(?:>>?|<)", token or ""):
+            skip_next = True
+            continue
+        if re.fullmatch(r"\d*(?:>>?|<).+", token or ""):
+            continue
+        if re.fullmatch(r"\d*[<>]&\d+", token or ""):
+            continue
+        cleaned.append(token)
+    return cleaned
+
+
 def _pipelines_into_shell(command: str) -> bool:
     return bool(re.search(r"\|\s*(?:sh|bash|zsh|fish|dash)\b", command or "", re.IGNORECASE))
 
@@ -808,6 +885,320 @@ def _first_token(segment: str) -> Tuple[str, List[str]]:
         parts = parts[1:]
     token = os.path.basename(parts[0]) if parts else ""
     return token, parts
+
+
+def _parts_for_bash_path_analysis(segment: str) -> Tuple[str, List[str]]:
+    parts = _shell_parts(segment)
+    if not parts:
+        return "", []
+    parts = _strip_leading_env_assignments(parts)
+    for _ in range(4):
+        stripped = _strip_safe_shell_wrapper_once(parts)
+        if not stripped or stripped == parts:
+            break
+        parts = _strip_leading_env_assignments(stripped)
+    parts = _strip_redirection_tokens(parts)
+    token = os.path.basename(parts[0]) if parts else ""
+    return token, parts
+
+
+def _filter_bash_path_args(args: List[str]) -> List[str]:
+    out: List[str] = []
+    after_double_dash = False
+    for arg in args:
+        if after_double_dash:
+            out.append(arg)
+        elif arg == "--":
+            after_double_dash = True
+        elif not arg.startswith("-"):
+            out.append(arg)
+    return out
+
+
+def _parse_pattern_command_paths(args: List[str], flags_with_args: set[str], *, default_current: bool = False) -> List[str]:
+    paths: List[str] = []
+    pattern_found = False
+    after_double_dash = False
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if not arg:
+            idx += 1
+            continue
+        if not after_double_dash and arg == "--":
+            after_double_dash = True
+            idx += 1
+            continue
+        if not after_double_dash and arg.startswith("-"):
+            flag = arg.split("=", 1)[0]
+            if flag in {"-e", "--regexp", "-f", "--file"}:
+                pattern_found = True
+            if flag in flags_with_args and "=" not in arg:
+                idx += 2
+                continue
+            idx += 1
+            continue
+        if not pattern_found:
+            pattern_found = True
+            idx += 1
+            continue
+        paths.append(arg)
+        idx += 1
+    return paths or (["."] if default_current else [])
+
+
+def _find_command_paths(args: List[str]) -> List[str]:
+    paths: List[str] = []
+    after_double_dash = False
+    seen_predicate = False
+    path_flags = {
+        "-anewer",
+        "-cnewer",
+        "-ilname",
+        "-ipath",
+        "-iwholename",
+        "-lname",
+        "-newer",
+        "-path",
+        "-samefile",
+        "-wholename",
+    }
+    newer_pattern = re.compile(r"^-newer[acmBt][acmtB]$")
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if not arg:
+            idx += 1
+            continue
+        if after_double_dash:
+            paths.append(arg)
+            idx += 1
+            continue
+        if arg == "--":
+            after_double_dash = True
+            idx += 1
+            continue
+        if arg.startswith("-"):
+            if arg in {"-H", "-L", "-P"}:
+                idx += 1
+                continue
+            seen_predicate = True
+            if (arg in path_flags or newer_pattern.match(arg)) and idx + 1 < len(args):
+                paths.append(args[idx + 1])
+                idx += 2
+                continue
+            idx += 1
+            continue
+        if not seen_predicate:
+            paths.append(arg)
+        idx += 1
+    return paths or ["."]
+
+
+def _bash_paths_for_segment(segment: str) -> List[Tuple[str, str]]:
+    """Return (raw_path, operation) pairs for common path-touching Bash commands."""
+
+    paths: List[Tuple[str, str]] = []
+    for target in _redirection_targets(segment, output=True):
+        paths.append((target, "write"))
+    for target in _redirection_targets(segment, output=False):
+        paths.append((target, "read"))
+
+    base, parts = _parts_for_bash_path_analysis(segment)
+    if not base or base not in _BASH_PATH_COMMANDS:
+        return paths
+    args = parts[1:]
+    op = "write" if base in _BASH_WRITE_PATH_COMMANDS else "read"
+    extracted: List[str]
+
+    if base == "find":
+        extracted = _find_command_paths(args)
+    elif base == "grep":
+        extracted = _parse_pattern_command_paths(
+            args,
+            {
+                "-A",
+                "-B",
+                "-C",
+                "-e",
+                "-f",
+                "-m",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--exclude",
+                "--exclude-dir",
+                "--file",
+                "--include",
+                "--include-dir",
+                "--max-count",
+                "--regexp",
+            },
+            default_current=any(arg in {"-r", "-R", "--recursive"} for arg in args),
+        )
+    elif base == "rg":
+        extracted = _parse_pattern_command_paths(
+            args,
+            {
+                "-e",
+                "-f",
+                "-g",
+                "-m",
+                "-t",
+                "-T",
+                "--glob",
+                "--max-count",
+                "--max-depth",
+                "--regexp",
+                "--replace",
+                "--type",
+                "--type-not",
+            },
+            default_current=True,
+        )
+    elif base == "tee":
+        extracted = _filter_bash_path_args(args)
+        op = "write"
+    else:
+        extracted = _filter_bash_path_args(args)
+
+    for path in extracted:
+        paths.append((path, op))
+    return paths
+
+
+def _bash_active_workspace() -> str:
+    try:
+        from src.tool_execution import get_active_workspace
+
+        return str(get_active_workspace() or "")
+    except Exception:
+        return ""
+
+
+def _bash_agent_cwd() -> str:
+    try:
+        from src.tool_execution import agent_cwd
+
+        return str(agent_cwd() or os.getcwd())
+    except Exception:
+        return os.getcwd()
+
+
+def _bash_allowed_path_roots() -> List[str]:
+    workspace = _bash_active_workspace()
+    if workspace:
+        return [os.path.realpath(os.path.expanduser(workspace))]
+    try:
+        from src.tool_execution import _tool_path_roots
+
+        roots = _tool_path_roots()
+    except Exception:
+        roots = []
+    if not roots:
+        roots = [_bash_agent_cwd(), "/tmp"]
+    return list(dict.fromkeys(os.path.realpath(os.path.expanduser(root)) for root in roots if root))
+
+
+def _bash_path_candidates(raw_path: str) -> List[str]:
+    raw = (raw_path or "").strip().strip("'\"")
+    if not raw:
+        return []
+    if raw == "-":
+        return []
+    if raw.startswith("file://"):
+        raw = raw[len("file://") :]
+    expanded = os.path.expanduser(raw)
+    if expanded in _BASH_DEVICE_PATHS:
+        return []
+    if _BASH_SHELL_EXPANSION_RE.search(expanded):
+        return [expanded]
+    if _BASH_GLOB_CHARS.search(expanded):
+        # Validate the stable base directory of a glob instead of pretending the
+        # literal wildcard filename exists.
+        before = re.split(r"[*?\[\]{}]", expanded, 1)[0]
+        expanded = os.path.dirname(before.rstrip("/")) or "."
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(_bash_agent_cwd(), expanded)
+    return [os.path.realpath(expanded)]
+
+
+def _bash_path_is_allowed(resolved_path: str) -> bool:
+    try:
+        path_norm = os.path.normcase(os.path.realpath(resolved_path))
+        for root in _bash_allowed_path_roots():
+            root_norm = os.path.normcase(os.path.realpath(root))
+            if path_norm == root_norm:
+                return True
+            try:
+                if os.path.commonpath([path_norm, root_norm]) == root_norm:
+                    return True
+            except ValueError:
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def _bash_path_is_protected(raw_path: str, resolved_path: str) -> bool:
+    values = [raw_path, resolved_path]
+    for value in values:
+        normalized = str(value or "").replace("\\", "/").casefold()
+        if _SENSITIVE_SHELL_PATH_RE.search(normalized):
+            return True
+        parts = {part for part in normalized.split("/") if part}
+        if parts.intersection(_DANGEROUS_PATH_PARTS):
+            return True
+        if any(fnmatch.fnmatch(normalized, pat) for pat in _DANGEROUS_PATH_PATTERNS):
+            return True
+    return False
+
+
+def _bash_path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
+    if op.tool != "bash":
+        return None
+    command = op.command or ""
+    segments = _split_shell_segments(command)
+    if len(segments) > _MAX_BASH_SEGMENTS_FOR_PERMISSION:
+        return None
+    for segment in segments:
+        for raw_path, access in _bash_paths_for_segment(segment):
+            raw_path = (raw_path or "").strip()
+            if not raw_path or raw_path == "-":
+                continue
+            if _BASH_SHELL_EXPANSION_RE.search(raw_path):
+                return PermissionDecision(
+                    behavior="ask",
+                    reason=f"bash {access} path uses shell expansion and needs review: {raw_path}",
+                    source="builtin",
+                    operation=op,
+                    suggested_rule=_rule_for_operation(op, "allow"),
+                    severity="high",
+                )
+            candidates = _bash_path_candidates(raw_path)
+            for resolved in candidates:
+                if not resolved:
+                    continue
+                if _bash_path_is_protected(raw_path, resolved):
+                    return PermissionDecision(
+                        behavior="ask",
+                        reason=f"bash {access} targets a protected path: {raw_path}",
+                        source="builtin",
+                        operation=op,
+                        suggested_rule=_rule_for_operation(op, "allow"),
+                        severity="high",
+                    )
+                if not _bash_path_is_allowed(resolved):
+                    scope = "the active workspace" if _bash_active_workspace() else "allowed roots"
+                    return PermissionDecision(
+                        behavior="ask",
+                        reason=f"bash {access} targets a path outside {scope}: {raw_path}",
+                        source="builtin",
+                        operation=op,
+                        suggested_rule=_rule_for_operation(op, "allow"),
+                        severity="normal" if access == "read" else "high",
+                    )
+    return None
 
 
 def classify_bash_command(command: str) -> Tuple[str, str]:
@@ -945,7 +1336,7 @@ def _bash_policy_decision(op: Operation) -> Optional[PermissionDecision]:
 def _builtin_decision(op: Operation) -> Optional[PermissionDecision]:
     if not builtin_permissions_enabled():
         return None
-    return _path_safety_decision(op) or _bash_policy_decision(op)
+    return _path_safety_decision(op) or _bash_path_safety_decision(op) or _bash_policy_decision(op)
 
 
 def _rule_for_operation(op: Operation, behavior: str) -> Dict[str, Any]:
