@@ -245,6 +245,31 @@ def get_active_workspace() -> Optional[str]:
     return _active_workspace.get()
 
 
+def _workspace_path_violation_before_permission(tool: str, content: str) -> Optional[str]:
+    """Return a workspace-confinement error for file ops before permission ask.
+
+    Operation permissions should not ask the user to approve a file operation
+    that the workspace layer will reject anyway. This keeps model-hallucinated
+    absolute paths from looking like legitimate approval requests.
+    """
+
+    ws = get_active_workspace()
+    if not ws or tool not in {"read_file", "write_file", "edit_file"}:
+        return None
+    try:
+        from src.operation_permissions import operation_from_tool
+
+        op = operation_from_tool(tool, content or "")
+        path = op.path or op.value
+        if path:
+            _resolve_tool_path_in_workspace(ws, path)
+    except ValueError as exc:
+        return str(exc)
+    except Exception:
+        logger.debug("Workspace permission preflight failed", exc_info=True)
+    return None
+
+
 def vet_workspace(raw: str) -> Optional[str]:
     """Validate a requested workspace path at bind time.
 
@@ -636,6 +661,16 @@ async def _execute_tool_block_impl(
     # command, file path, web_fetch domain, or MCP tool while leaving the tool
     # itself enabled.
     if tool not in {"ask_user", "update_plan"}:
+        workspace_violation = _workspace_path_violation_before_permission(tool, content)
+        if workspace_violation:
+            desc = f"{tool}: BLOCKED"
+            result = {"error": workspace_violation, "exit_code": 1, "blocked": True}
+            logger.warning(
+                "Workspace path blocked before permission check tool=%s error=%s",
+                tool,
+                workspace_violation,
+            )
+            return desc, result
         try:
             from src.operation_permissions import ask_result, deny_result, evaluate_tool_permission
 

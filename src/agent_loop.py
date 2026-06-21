@@ -696,6 +696,7 @@ _ROUND_LIMIT_ORIGINAL_RE = re.compile(
     r"Original user request to continue:\s*(?P<request>.*?)(?:\n\s*\n|$)",
     re.IGNORECASE | re.DOTALL,
 )
+_PERMISSION_RESUME_MARKER = "OPERATION PERMISSION RESUME"
 
 
 def _is_round_limit_continuation(text: str) -> bool:
@@ -710,6 +711,19 @@ def _extract_round_limit_original_request(text: str) -> str:
         return ""
     request = (match.group("request") or "").strip()
     return request[:600]
+
+
+def _is_permission_resume_context(messages: List[Dict]) -> bool:
+    """True when this turn is the continuation after a permission approval."""
+    for msg in messages or []:
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+        if _PERMISSION_RESUME_MARKER in str(content or ""):
+            return True
+    return False
 
 
 def _detect_admin_intent(messages: List[Dict]) -> bool:
@@ -2133,6 +2147,7 @@ async def stream_agent_loop(
     _last_user = _extract_last_user_message(messages)
     _intent = _classify_agent_request(messages, _last_user)
     _round_limit_continue = _is_round_limit_continuation(_last_user)
+    _permission_resume_context = _is_permission_resume_context(messages)
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
@@ -2287,7 +2302,8 @@ async def stream_agent_loop(
             _sm = SkillsManager(DATA_DIR)
             _owner_skills = _sm.load(owner=owner) if _skills_on else []
             _allow_skill_tool = not (
-                _round_limit_continue and not _looks_like_skill_request(_retrieval_query)
+                (_round_limit_continue or _permission_resume_context)
+                and not _looks_like_skill_request(_retrieval_query)
             )
             if _owner_skills and _allow_skill_tool:
                 _relevant_tools.add("manage_skills")
@@ -2311,7 +2327,7 @@ async def stream_agent_loop(
             logger.debug(f"[tool-rag] skill-aware tool include skipped: {_e}")
 
     if _relevant_tools is not None:
-        if _round_limit_continue and not _looks_like_skill_request(_retrieval_query):
+        if (_round_limit_continue or _permission_resume_context) and not _looks_like_skill_request(_retrieval_query):
             _relevant_tools.discard("manage_skills")
         logger.info("[agent-intent] selected_tools=%s", sorted(_relevant_tools)[:50])
 

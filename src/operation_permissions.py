@@ -791,17 +791,96 @@ def register_pending_approval(session_id: str, decision: PermissionDecision) -> 
     if not session_id or not decision.operation:
         return
     rule = decision.suggested_rule or _rule_for_operation(decision.operation, "allow")
+    op = decision.operation
     _PENDING_APPROVALS[str(session_id)] = {
         "operation": {
-            "tool": decision.operation.tool,
-            "value": decision.operation.value,
-            "kind": decision.operation.kind,
-            "description": decision.operation.description,
+            "tool": op.tool,
+            "content": op.content,
+            "value": op.value,
+            "kind": op.kind,
+            "description": op.description,
+            "command": op.command,
+            "path": op.path,
+            "domain": op.domain,
+            "url": op.url,
+            "mcp_server": op.mcp_server,
+            "mcp_tool": op.mcp_tool,
+            "args": dict(op.args or {}),
         },
         "rule": dict(rule),
         "reason": decision.reason,
         "created_at": time.time(),
     }
+
+
+def resume_tools_for_operation(operation: Mapping[str, Any] | Operation | None) -> List[str]:
+    """Return the minimal tool set needed to continue after a permission reply.
+
+    The user's approval label ("Permitir una vez", etc.) is intentionally
+    low-signal text. Without an explicit tool hint, the next agent turn may
+    re-run retrieval against the label itself and drop the tool that was just
+    approved. Keep this deterministic and conservative.
+    """
+
+    if isinstance(operation, Operation):
+        tool = operation.tool
+    elif isinstance(operation, Mapping):
+        tool = str(operation.get("tool") or "")
+    else:
+        tool = ""
+    tool = _norm_tool(tool)
+
+    base = {"ask_user", "update_plan"}
+    file_read = {"get_workspace", "ls", "glob", "grep", "read_file"}
+    file_write = file_read | {"write_file", "edit_file", "bash"}
+
+    if tool in {"write_file", "edit_file"}:
+        return sorted(base | file_write)
+    if tool in {"read_file", "grep", "glob", "ls", "get_workspace"}:
+        return sorted(base | file_read)
+    if tool == "bash":
+        return sorted(base | file_read | {"bash"})
+    if tool == "python":
+        return sorted(base | file_read | {"python"})
+    if tool == "web_fetch":
+        return sorted(base | {"web_search", "web_fetch"})
+    if tool.startswith("mcp__"):
+        return sorted(base | {tool})
+    if tool:
+        return sorted(base | {tool})
+    return sorted(base)
+
+
+def permission_resume_note(consumed: Mapping[str, Any]) -> str:
+    """Build a system note for the agent turn after a permission decision."""
+
+    decision = str(consumed.get("decision") or "")
+    op = consumed.get("operation") or {}
+    if not isinstance(op, Mapping):
+        op = {}
+    tool = str(op.get("tool") or "")
+    description = str(op.get("description") or tool or "operation")
+    content = str(op.get("content") or "")
+    if len(content) > 1200:
+        content = content[:1200] + "\n...[truncated]"
+    if decision == "deny":
+        return (
+            "OPERATION PERMISSION RESUME\n"
+            "The user denied the pending operation permission.\n"
+            f"Denied operation: {description}\n"
+            "Continue the current-session task only if there is a safe alternative. "
+            "Do not retry the denied operation unless the user explicitly asks."
+        )
+    return (
+        "OPERATION PERMISSION RESUME\n"
+        "The user approved the pending operation permission.\n"
+        "Continue the current-session task; do not treat the user's permission label as a new request.\n"
+        "Do not pull in unrelated sessions, memories, or tasks for this approval turn.\n"
+        "Retry the approved operation if it is still needed, then continue with the original task.\n"
+        f"Approved tool: {tool}\n"
+        f"Approved operation: {description}\n"
+        f"Approved tool args/content:\n{content}"
+    )
 
 
 def permission_ask_payload(decision: PermissionDecision) -> Dict[str, Any]:
@@ -862,6 +941,8 @@ def consume_pending_permission_response(
         return {
             "decision": "deny",
             "message": f"Permiso denegado para: {op.get('description') or op.get('tool')}",
+            "operation": op,
+            "resume_tools": [],
         }
     if action == "allow_once":
         add_session_rule(sid, rule, once=True)
@@ -869,6 +950,8 @@ def consume_pending_permission_response(
         return {
             "decision": "allow_once",
             "message": f"Permiso de una vez registrado para: {op.get('description') or op.get('tool')}",
+            "operation": op,
+            "resume_tools": resume_tools_for_operation(op),
         }
     if action == "allow_session":
         add_session_rule(sid, rule, once=False)
@@ -876,6 +959,8 @@ def consume_pending_permission_response(
         return {
             "decision": "allow_session",
             "message": f"Permiso de sesión registrado para: {op.get('description') or op.get('tool')}",
+            "operation": op,
+            "resume_tools": resume_tools_for_operation(op),
         }
     if action == "allow_always":
         persistent = normalize_rule({**rule, "scope": "persistent"}, scope="persistent")
@@ -885,6 +970,8 @@ def consume_pending_permission_response(
             "decision": "allow_always",
             "message": f"Permiso persistente guardado para: {op.get('description') or op.get('tool')}",
             "rule": persistent,
+            "operation": op,
+            "resume_tools": resume_tools_for_operation(op),
         }
     return None
 
@@ -928,4 +1015,3 @@ def ask_result(decision: PermissionDecision, *, session_id: Optional[str]) -> Di
             "reason": decision.reason,
         },
     }
-

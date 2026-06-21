@@ -69,6 +69,10 @@ def test_pending_permission_response_adds_one_shot_rule(monkeypatch):
 
     consumed = op.consume_pending_permission_response(sid, "Permitir una vez")
     assert consumed["decision"] == "allow_once"
+    assert consumed["operation"]["tool"] == "bash"
+    assert "git push origin main" in consumed["operation"]["content"]
+    assert "bash" in consumed["resume_tools"]
+    assert "ask_user" in consumed["resume_tools"]
 
     allowed = op.evaluate_tool_permission("bash", "git push origin main", session_id=sid)
     assert allowed.behavior == "allow"
@@ -76,6 +80,54 @@ def test_pending_permission_response_adds_one_shot_rule(monkeypatch):
     # One-shot rule is consumed.
     asked_again = op.evaluate_tool_permission("bash", "git push origin main", session_id=sid)
     assert asked_again.behavior == "ask"
+
+
+def test_permission_resume_note_and_tools_for_file_approval(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-file-resume"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    decision = op.evaluate_tool_permission(
+        "edit_file",
+        json.dumps({"path": ".git/config", "old": "x", "new": "y"}),
+        session_id=sid,
+    )
+    assert decision.behavior == "ask"
+    op.register_pending_approval(sid, decision)
+
+    consumed = op.consume_pending_permission_response(sid, "Permitir esta sesión")
+    tools = set(consumed["resume_tools"])
+
+    assert {"edit_file", "write_file", "bash", "read_file", "get_workspace"} <= tools
+    note = op.permission_resume_note(consumed)
+    assert "OPERATION PERMISSION RESUME" in note
+    assert "do not treat the user's permission label as a new request" in note
+    assert "Approved tool: edit_file" in note
+    assert ".git/config" in note
+
+
+def test_permission_deny_does_not_resume_write_tools(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-deny-resume"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    decision = op.evaluate_tool_permission("bash", "git push origin main", session_id=sid)
+    assert decision.behavior == "ask"
+    op.register_pending_approval(sid, decision)
+
+    consumed = op.consume_pending_permission_response(sid, "Denegar")
+
+    assert consumed["decision"] == "deny"
+    assert consumed["resume_tools"] == []
+    assert "denied" in op.permission_resume_note(consumed).lower()
 
 
 @pytest.mark.asyncio
@@ -114,3 +166,30 @@ async def test_execute_tool_block_asks_for_builtin_bash_risk(monkeypatch):
     assert result["exit_code"] == 0
     assert result["ask_user"]["permission_request"] is True
 
+
+@pytest.mark.asyncio
+async def test_workspace_blocks_absolute_file_path_before_permission(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.agent_tools import ToolBlock
+    from src.tool_execution import execute_tool_block
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "interactive_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    desc, result = await execute_tool_block(
+        ToolBlock("edit_file", json.dumps({"path": "/home/gabriel/.git/config", "old": "x", "new": "y"})),
+        owner="admin",
+        session_id="s-workspace-preflight",
+        workspace=str(workspace),
+    )
+
+    assert desc == "edit_file: BLOCKED"
+    assert result["blocked"] is True
+    assert "outside the workspace" in result["error"]
+    assert "ask_user" not in result

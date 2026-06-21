@@ -634,8 +634,10 @@ def setup_chat_routes(
         resolve_session_auth(sess, session, owner=get_current_user(request))
 
         permission_context_note = ""
+        permission_resume_tools = None
+        permission_resume_decision = ""
         try:
-            from src.operation_permissions import consume_pending_permission_response
+            from src.operation_permissions import consume_pending_permission_response, permission_resume_note
 
             _perm_response = consume_pending_permission_response(
                 session,
@@ -643,11 +645,11 @@ def setup_chat_routes(
                 owner=owner,
             )
             if _perm_response:
-                permission_context_note = (
-                    "Operation permission decision recorded by the user: "
-                    f"{_perm_response.get('message', '')}. "
-                    "If the denied/approved operation is still needed, continue accordingly."
-                )
+                permission_resume_decision = str(_perm_response.get("decision") or "")
+                permission_context_note = permission_resume_note(_perm_response)
+                _resume_tools = _perm_response.get("resume_tools") or []
+                if permission_resume_decision != "deny" and _resume_tools:
+                    permission_resume_tools = set(str(t) for t in _resume_tools if t)
                 logger.info("[operation-permissions] %s", permission_context_note)
         except Exception as _perm_exc:
             logger.warning("Failed to consume pending operation permission: %s", _perm_exc)
@@ -673,6 +675,16 @@ def setup_chat_routes(
             last_user_message=message,
         )
         allow_tool_preprocessing = not pre_context_tool_policy.block_all_tool_calls
+        if permission_context_note:
+            # A permission label such as "Permitir una vez" is not a new task.
+            # Do not run memory/RAG/skill preprocessing against that label; it
+            # can pull unrelated context and make the resume feel like another
+            # chat leaked in. The system note + forced relevant_tools below
+            # carry the intended continuation context.
+            allow_tool_preprocessing = False
+            no_memory = True
+            use_rag = "false"
+            use_web = False
 
         # Build shared context (stream path uses enhanced_message for context preface)
         ctx = await build_chat_context(
@@ -697,7 +709,12 @@ def setup_chat_routes(
             allow_tool_preprocessing=allow_tool_preprocessing,
         )
         if permission_context_note:
-            ctx.messages.insert(len(ctx.preface), {"role": "system", "content": permission_context_note})
+            _insert_at = len(ctx.messages)
+            for _idx in range(len(ctx.messages) - 1, -1, -1):
+                if ctx.messages[_idx].get("role") == "user":
+                    _insert_at = _idx
+                    break
+            ctx.messages.insert(_insert_at, {"role": "system", "content": permission_context_note})
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
 
@@ -1298,6 +1315,7 @@ def setup_chat_routes(
                         plan_mode=plan_mode,
                         approved_plan=approved_plan or None,
                         workspace=workspace or None,
+                        relevant_tools=permission_resume_tools,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
