@@ -62,6 +62,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key>  <string>11.0</string>
     <key>NSHighResolutionCapable</key> <true/>
     <key>LSUIElement</key>             <false/>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
 </dict>
 </plist>
 PLIST
@@ -75,7 +80,7 @@ PORT="__PORT__"
 URL="http://127.0.0.1:${PORT}"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-UVICORN="$INSTALL_DIR/venv/bin/uvicorn"
+START_SCRIPT="$INSTALL_DIR/start-macos.sh"
 LOG="$INSTALL_DIR/logs/odysseus-app.log"
 
 notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Odysseus\"" >/dev/null 2>&1; }
@@ -84,12 +89,10 @@ die_gui() {
   exit 1
 }
 
-[ -x "$UVICORN" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
+[ -x "$START_SCRIPT" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
 
 cd $INSTALL_DIR
-python3.11 -m venv venv
-./venv/bin/pip install -r requirements.txt
-./venv/bin/python setup.py"
+./start-macos.sh"
 
 # Open the UI in a chrome-less app window (Chromium browsers), else default browser.
 open_ui() {
@@ -119,15 +122,25 @@ fi
 
 notify "Starting…"
 cd "$INSTALL_DIR" || die_gui "Install folder not found: $INSTALL_DIR"
-if [ "$(uname -m)" = "arm64" ]; then
-  arch -arm64 "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
+export ODYSSEUS_NO_OPEN=1
+export ODYSSEUS_PORT="$PORT"
+if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+  /usr/bin/arch -arm64 /bin/bash "$START_SCRIPT" >>"$LOG" 2>&1 &
 else
-  "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
+  /bin/bash "$START_SCRIPT" >>"$LOG" 2>&1 &
 fi
 SERVER_PID=$!
 
-# Quitting the app stops the server it started.
-trap 'kill $SERVER_PID 2>/dev/null; exit 0' TERM INT
+# Quitting the app stops the complete local stack it started. The direct
+# children are Apfel, ChromaDB, and Uvicorn; stopping those first lets the
+# setup script unwind cleanly instead of leaving background services behind.
+stop_server() {
+  for child in $(/usr/bin/pgrep -P "$SERVER_PID" 2>/dev/null); do
+    kill "$child" 2>/dev/null || true
+  done
+  kill "$SERVER_PID" 2>/dev/null || true
+}
+trap 'stop_server; exit 0' TERM INT
 
 # Wait for readiness (first run downloads an embedding model — allow ~2 min).
 READY=0
