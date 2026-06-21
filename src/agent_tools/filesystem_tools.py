@@ -158,6 +158,47 @@ class ReadFileTool:
             path = _resolve_tool_path(raw_path)
         except ValueError as e:
             return {"error": f"read_file: {e}", "exit_code": 1}
+
+        # Office/EPUB files are binary containers. Route them through the
+        # document extractor instead of decoding the zip bytes as UTF-8.
+        from src.markitdown_runtime import (
+            is_markitdown_format,
+            convert_to_markdown,
+            load_markitdown,
+            markitdown_install_hint,
+        )
+        if is_markitdown_format(path):
+            if not os.path.exists(path):
+                return {"error": f"read_file: {path}: not found", "exit_code": 1}
+            if os.path.isdir(path):
+                return {"error": f"read_file: {path}: is a directory (use ls)", "exit_code": 1}
+
+            markdown = await asyncio.to_thread(convert_to_markdown, path)
+            if not markdown or not markdown.strip():
+                try:
+                    load_markitdown()
+                except RuntimeError:
+                    hint = markitdown_install_hint(path)
+                    return {
+                        "error": (
+                            f"read_file: {path}: Office extraction support is missing. "
+                            f"Ask the user before installing it with `{hint}`."
+                        ),
+                        "exit_code": 1,
+                    }
+                return {"error": f"read_file: {path}: no extractable text found", "exit_code": 1}
+
+            if offset > 0 or limit > 0:
+                start = max(offset, 1) - 1
+                lines = markdown.splitlines(keepends=True)
+                selected = lines[start : start + limit if limit > 0 else None]
+                data = "".join(selected)
+            else:
+                data = markdown
+            if len(data) > MAX_READ_CHARS:
+                data = data[:MAX_READ_CHARS] + f"\n... [truncated at {MAX_READ_CHARS} chars]"
+            return {"output": data, "exit_code": 0}
+
         try:
             def _read():
                 if offset > 0 or limit > 0:

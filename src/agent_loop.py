@@ -257,6 +257,7 @@ _DOMAIN_RULES = {
 - Use file tools for real disk files. Use document tools only for editor documents.
 - Prefer `grep`, `glob`, and `ls` over shell equivalents when available.
 - When the user names a folder (for example Desktop, Downloads, or Documents), search that folder first. For an exact filename use a literal `glob` pattern with that folder as `path`; do not start with `**` from the workspace root. Broaden only when the scoped lookup has no result.
+- After locating a file the user asked to inspect or analyze, call `read_file`; it handles Office files such as `.xlsx`. If it reports a missing optional dependency, use `ask_user` before installing the narrow package it names instead of installing all optional requirements.
 - Use `edit_file`/`write_file` for writes; avoid shell redirection/heredocs for editing files.""",
     "settings": """\
 ## Settings/API rules
@@ -340,7 +341,7 @@ Fetch and read the text content of a SPECIFIC URL the user names (e.g. "check ex
 ```read_file
 <file path>
 ```
-Read a file and return its contents.""",
+Read a file and return its contents. Office files such as `.xlsx` are extracted to text when their format support is installed; call this tool and follow its targeted install hint rather than assuming the file cannot be read.""",
 
     "write_file": """\
 ```write_file

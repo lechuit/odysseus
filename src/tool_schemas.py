@@ -82,7 +82,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from disk. Optionally read a line range with offset/limit for large files.",
+            "description": "Read a file from disk. Supports text/code and Office/EPUB extraction, including .xlsx, plus optional line ranges. Call this after locating a requested file instead of assuming its format is unreadable.",
             "parameters": {
                 "type": "object",
                 "properties": {

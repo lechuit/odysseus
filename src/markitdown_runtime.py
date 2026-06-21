@@ -17,11 +17,25 @@ MARKITDOWN_MISSING = (
     "Office/EPUB document extraction requires markitdown. Install optional "
     "dependencies with `pip install -r requirements-optional.txt`."
 )
+MARKITDOWN_VERSION = "0.1.6"
 
 # Formats routed through markitdown. PDFs stay on pypdf (src/document_processor
 # and src/personal_docs); plain text/code/csv/json/markdown/html stay on the
 # cheaper built-in text path. These are the formats currently dropped entirely.
 MARKITDOWN_EXTS = frozenset({".docx", ".pptx", ".xlsx", ".xls", ".epub"})
+
+
+def markitdown_install_hint(path: str) -> str:
+    """Return the smallest install command for the requested file format."""
+    extension = os.path.splitext(path or "")[1].lower()
+    extra = {
+        ".docx": "docx",
+        ".pptx": "pptx",
+        ".xlsx": "xlsx",
+        ".xls": "xls",
+    }.get(extension)
+    package = f"markitdown[{extra}]" if extra else "markitdown"
+    return f"pip install '{package}=={MARKITDOWN_VERSION}'"
 
 
 def is_markitdown_format(path: str) -> bool:

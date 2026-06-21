@@ -180,3 +180,35 @@ def test_read_file_plain_path_backcompat(repo):
     r = _run("read_file", os.path.join(repo, "a.py"))
     assert r["exit_code"] == 0
     assert "needle" in r["output"]
+
+
+def test_read_file_extracts_xlsx_instead_of_decoding_binary(repo, monkeypatch):
+    path = os.path.join(repo, "transactions.xlsx")
+    with open(path, "wb") as f:
+        f.write(b"PK\x03\x04binary spreadsheet")
+
+    monkeypatch.setattr(
+        "src.markitdown_runtime.convert_to_markdown",
+        lambda _path: "# Transactions\n\n| amount |\n| ---: |\n| 42 |\n",
+    )
+    r = _run("read_file", path)
+    assert r["exit_code"] == 0
+    assert "# Transactions" in r["output"]
+    assert "binary spreadsheet" not in r["output"]
+
+
+def test_read_file_xlsx_missing_dependency_returns_targeted_hint(repo, monkeypatch):
+    path = os.path.join(repo, "transactions.xlsx")
+    with open(path, "wb") as f:
+        f.write(b"PK\x03\x04binary spreadsheet")
+
+    monkeypatch.setattr("src.markitdown_runtime.convert_to_markdown", lambda _path: None)
+
+    def missing_markitdown():
+        raise RuntimeError("missing")
+
+    monkeypatch.setattr("src.markitdown_runtime.load_markitdown", missing_markitdown)
+    r = _run("read_file", path)
+    assert r["exit_code"] == 1
+    assert "markitdown[xlsx]==0.1.6" in r["error"]
+    assert "requirements-optional.txt" not in r["error"]
