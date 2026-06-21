@@ -812,7 +812,7 @@ _BASH_PATH_COMMANDS = {
 }
 _BASH_WRITE_PATH_COMMANDS = {"cp", "ln", "mkdir", "mv", "rm", "rmdir", "tee", "touch"}
 _BASH_GLOB_CHARS = re.compile(r"[*?\[\]{}]")
-_BASH_SHELL_EXPANSION_RE = re.compile(r"(\$\(|\$\{|\$\[|`)")
+_BASH_COMMAND_SUBSTITUTION_RE = re.compile(r"(\$\(|\$\{|\$\[|`)")
 _BASH_DEVICE_PATHS = {
     "/dev/null",
     "/dev/stdin",
@@ -1111,8 +1111,6 @@ def _bash_path_candidates(raw_path: str) -> List[str]:
     expanded = os.path.expanduser(raw)
     if expanded in _BASH_DEVICE_PATHS:
         return []
-    if _BASH_SHELL_EXPANSION_RE.search(expanded):
-        return [expanded]
     if _BASH_GLOB_CHARS.search(expanded):
         # Validate the stable base directory of a glob instead of pretending the
         # literal wildcard filename exists.
@@ -1154,6 +1152,31 @@ def _bash_path_is_protected(raw_path: str, resolved_path: str) -> bool:
     return False
 
 
+def _bash_path_expansion_reason(raw_path: str) -> str:
+    """Return why a Bash path spelling needs manual review.
+
+    We validate paths before Bash expands them.  Any syntax that Bash can
+    expand differently from our resolver creates a TOCTOU gap: e.g.
+    ``cat $HOME/file`` looks like ``./$HOME/file`` to this validator when a
+    workspace is active, but Bash reads from the real home directory.
+    """
+
+    raw = (raw_path or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    if _BASH_COMMAND_SUBSTITUTION_RE.search(raw):
+        return "command, brace, arithmetic, or backtick expansion"
+    if "$" in raw:
+        return "environment variable expansion"
+    if "%" in raw:
+        return "Windows-style environment variable expansion"
+    if raw.startswith("="):
+        return "zsh equals expansion"
+    if raw.startswith("~") and raw not in {"~"} and not raw.startswith("~/"):
+        return "tilde variant expansion"
+    return ""
+
+
 def _bash_path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
     if op.tool != "bash":
         return None
@@ -1166,10 +1189,11 @@ def _bash_path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
             raw_path = (raw_path or "").strip()
             if not raw_path or raw_path == "-":
                 continue
-            if _BASH_SHELL_EXPANSION_RE.search(raw_path):
+            expansion_reason = _bash_path_expansion_reason(raw_path)
+            if expansion_reason:
                 return PermissionDecision(
                     behavior="ask",
-                    reason=f"bash {access} path uses shell expansion and needs review: {raw_path}",
+                    reason=f"bash {access} path uses {expansion_reason} and needs review: {raw_path}",
                     source="builtin",
                     operation=op,
                     suggested_rule=_rule_for_operation(op, "allow"),

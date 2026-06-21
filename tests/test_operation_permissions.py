@@ -272,6 +272,78 @@ def test_bash_path_constraints_do_not_treat_grep_pattern_as_path(monkeypatch, tm
     assert decision.behavior == "passthrough"
 
 
+def test_bash_path_constraints_ask_for_environment_variable_paths(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat $HOME/notes.txt", session_id="s-env-path")
+
+    assert decision.behavior == "ask"
+    assert "environment variable expansion" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_windows_environment_variable_paths(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat %USERPROFILE%/notes.txt", session_id="s-win-env-path")
+
+    assert decision.behavior == "ask"
+    assert "Windows-style environment variable expansion" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_tilde_variant_paths(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat ~root/.ssh/config", session_id="s-tilde-path")
+
+    assert decision.behavior == "ask"
+    assert "tilde variant expansion" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_zsh_equals_paths(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    decision = op.evaluate_tool_permission("bash", "cat =python", session_id="s-zsh-equals-path")
+
+    assert decision.behavior == "ask"
+    assert "zsh equals expansion" in decision.reason
+
+
 def test_builtin_bash_policy_asks_for_mutation(monkeypatch):
     from src import operation_permissions as op
 
