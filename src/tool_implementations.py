@@ -218,17 +218,12 @@ async def do_manage_skills(content: str, owner: Optional[str] = None) -> Dict:
             proc = args.get("steps") or []
         if not proc and not args.get("body_extra") and not args.get("solution"):
             return {"error": "procedure (or solution body) is required", "exit_code": 1}
-        # Same auto-publish gate as the extractor path — when the user
-        # has auto_approve_skills on and the caller didn't pin an explicit
-        # status, publish immediately. Audit later demotes/removes on fail.
+        # Manual skill creation remains available, but it must not auto-publish
+        # implicitly. Callers can still pass an explicit status when the user
+        # asked to publish a skill.
         _status_arg = args.get("status")
         if not _status_arg:
-            try:
-                from routes.prefs_routes import _load_for_user as _load_prefs
-                _prefs = _load_prefs(owner) or {}
-                _status_arg = "published" if _prefs.get("auto_approve_skills", True) else "draft"
-            except Exception:
-                _status_arg = "draft"
+            _status_arg = "draft"
         entry = sm.add_skill(
             name=args.get("name"),
             description=(args.get("description") or args.get("title") or "").strip(),

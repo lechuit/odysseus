@@ -1427,19 +1427,10 @@ def _build_system_prompt(
                 from services.memory.skills import SkillsManager
                 from src.constants import DATA_DIR
                 sm = SkillsManager(DATA_DIR)
-                # Brain → Skills settings → "Auto-approve skills" toggle +
-                # confidence threshold. Approve OFF → published-only (no draft
-                # passes). Approve ON → drafts at/above the chosen confidence
-                # (0 = "All"). Falls back to the global default setting.
-                if not _prefs.get("auto_approve_skills", True):
-                    _skill_min_conf = 2.0  # nothing draft clears it → published only
-                else:
-                    try:
-                        _skill_min_conf = float(_prefs.get(
-                            "skill_min_confidence",
-                            get_setting("skill_autosave_min_confidence", 0.85)))
-                    except (TypeError, ValueError):
-                        _skill_min_conf = 0.85
+                # Automatic skill approval is disabled. Only published skills
+                # are injected; drafts stay invisible until the user explicitly
+                # publishes them.
+                _skill_min_conf = 2.0  # nothing draft clears it → published only
                 try:
                     _skill_max_injected = int(_prefs.get(
                         "skill_max_injected",

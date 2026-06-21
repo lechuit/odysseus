@@ -77,6 +77,7 @@ async def test_maybe_extract_skill_recovers_json_past_stray_braces(monkeypatch, 
 
     assert entry is not None
     assert entry["title"] == "Deploy runbook"
+    assert entry["status"] == "draft"
     assert skills_manager.added and skills_manager.added[0]["title"] == "Deploy runbook"
 
 
@@ -112,6 +113,7 @@ async def test_maybe_extract_skill_recovers_json_after_leading_invalid_brace(mon
 
     assert entry is not None
     assert entry["title"] == "Valid later"
+    assert entry["status"] == "draft"
     assert skills_manager.added and skills_manager.added[0]["title"] == "Valid later"
 
 

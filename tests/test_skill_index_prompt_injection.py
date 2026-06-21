@@ -103,7 +103,7 @@ def _patch_prefs(monkeypatch, data_dir):
     fake_prefs = types.ModuleType("routes.prefs_routes")
     fake_prefs._load_for_user = lambda user=None: {
         "skills_enabled": True,
-        "auto_approve_skills": True,
+        "auto_approve_skills": False,
     }
     sys.modules["routes.prefs_routes"] = fake_prefs
 

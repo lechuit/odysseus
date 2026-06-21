@@ -1070,14 +1070,12 @@ def run_post_response_tasks(
             t_url, t_model, t_headers,
         )))
 
-    # Skill extraction from complex agent runs. Only when the user actually
-    # chose agent mode — not a chat we auto-escalated for a notes/calendar
-    # intent, and never in incognito/compare.
-    auto_skills_enabled = bool(uprefs.get("auto_skills", True))
-    # Quiet by default — full gate/dispatch/start trace runs at DEBUG so
-    # users can re-enable diagnostics with LOG_LEVEL=DEBUG when something
-    # silently breaks. INFO-level only shows the outcome inside
-    # maybe_extract_skill (Auto-extracted / dropped / failed).
+    # Automatic skill learning is intentionally disabled. Skills remain a
+    # manual/imported feature, but conversations should not silently create
+    # reusable procedures or publish them into future prompts.
+    auto_skills_enabled = False
+    # Quiet by default — keep the gate trace at DEBUG so ordinary logs are not
+    # noisy. The value is hard-disabled above; prefs are ignored for this path.
     logger.debug(
         "[skill-extract] gate: extract_skills=%s auto_skills=%s incognito=%s "
         "compare=%s rounds=%d tools=%d skills_manager=%s",

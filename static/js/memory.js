@@ -189,8 +189,10 @@ async function syncToggles() {
   // injection (see chat_helpers.py: uprefs.skills_enabled).
   await syncPrefToggle('skills-enabled-header-toggle', 'skills_enabled', 'Skills enabled', 'Skills disabled', false);
   await syncPrefToggle('auto-memory-toggle', 'auto_memory', 'Auto-extract memories enabled', 'Auto-extract memories disabled', false);
-  await syncPrefToggle('auto-skills-toggle', 'auto_skills', 'Auto-extract skills enabled', 'Auto-extract skills disabled', false);
-  await syncPrefToggle('auto-approve-skills-toggle', 'auto_approve_skills', 'Auto-approve skills enabled', 'Auto-approve skills disabled', false);
+  await syncPrefToggle('auto-skills-toggle', 'auto_skills', 'Auto-extract skills enabled', 'Auto-extract skills disabled', false, false);
+  await syncPrefToggle('auto-approve-skills-toggle', 'auto_approve_skills', 'Auto-approve skills enabled', 'Auto-approve skills disabled', false, false);
+  disableAutoSkillLearningToggle('auto-skills-toggle');
+  disableAutoSkillLearningToggle('auto-approve-skills-toggle');
   await syncPrefSlider('skill-confidence-slider', 'skill_min_confidence', 'skill-confidence-label', 0.85);
   await syncPrefNumber('skill-max-input', 'skill_max_injected', 3);
 
@@ -326,17 +328,28 @@ async function syncPrefNumber(elementId, prefKey, defaultVal) {
   }
 }
 
-async function syncPrefToggle(elementId, prefKey, onMsg, offMsg, dimBelow = true) {
+function disableAutoSkillLearningToggle(elementId) {
+  const toggle = document.getElementById(elementId);
+  if (!toggle) return;
+  toggle.checked = false;
+  toggle.disabled = true;
+  toggle.title = 'Automatic skill learning is disabled. Skills can still be created or installed manually.';
+}
+
+async function syncPrefToggle(elementId, prefKey, onMsg, offMsg, dimBelow = true, defaultChecked = true) {
   const toggle = document.getElementById(elementId);
   if (!toggle) return;
   try {
     const res = await fetch(`${window.location.origin}/api/prefs/${prefKey}`);
     if (res.ok) {
       const data = await res.json();
-      toggle.checked = data.value !== false;
+      toggle.checked = data.value === undefined || data.value === null
+        ? Boolean(defaultChecked)
+        : data.value !== false;
     }
   } catch (e) {
     console.error(`Failed to load ${prefKey} pref:`, e);
+    toggle.checked = Boolean(defaultChecked);
   }
   if (dimBelow) syncToggleDim(toggle);
   if (!toggle.dataset.bound) {

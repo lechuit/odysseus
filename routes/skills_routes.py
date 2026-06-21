@@ -492,21 +492,17 @@ _skill_audit_jobs: dict = {}
 def _audit_auto_publish_policy(owner) -> tuple[bool, float]:
     """Return (auto_publish_enabled, minimum_confidence) for audit finalization."""
     try:
-        from routes.prefs_routes import _load_for_user
-        prefs = _load_for_user(owner) or {}
-    except Exception:
-        prefs = {}
-    try:
         from src.settings import get_setting
         default_min = get_setting("skill_autosave_min_confidence", 0.85)
     except Exception:
         default_min = 0.85
-    enabled = bool(prefs.get("auto_approve_skills", True))
     try:
-        min_conf = float(prefs.get("skill_min_confidence", default_min))
+        min_conf = float(default_min)
     except (TypeError, ValueError):
         min_conf = 0.85
-    return enabled, max(0.0, min(1.0, min_conf))
+    # Audits can still validate/demote skills, but they should never publish
+    # automatically. Publishing is an explicit user action now.
+    return False, max(0.0, min(1.0, min_conf))
 
 
 def _skill_duplicate_blocker(skills_manager, name: str, owner) -> Optional[str]:

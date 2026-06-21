@@ -274,10 +274,10 @@ async def test_extraction_jobs_wait_for_active_stream_before_running(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_post_response_tasks_does_not_fire_extraction_concurrently(monkeypatch):
-    """run_post_response_tasks must queue extraction through the sequential
-    gate (not asyncio.create_task the extractor coroutines directly), so they
-    never race the main completion or each other."""
+async def test_run_post_response_tasks_queues_memory_but_not_auto_skills(monkeypatch):
+    """run_post_response_tasks must queue memory extraction through the
+    sequential gate, while automatic skill extraction stays disabled even if a
+    legacy preference still says auto_skills=true."""
     chat_helpers = _install_chat_helpers_stubs(monkeypatch)
 
     # Stub out the modules run_post_response_tasks lazily imports.
@@ -333,11 +333,12 @@ async def test_run_post_response_tasks_does_not_fire_extraction_concurrently(mon
     # Let the scheduled background task run.
     await asyncio.sleep(0.05)
 
-    # Both extractors were queued through the sequential gate — not fired
-    # directly via asyncio.create_task — and both ultimately ran exactly once.
+    # Memory extraction is still queued through the sequential gate. Automatic
+    # skill extraction is disabled and must not run even when old prefs say
+    # auto_skills=true.
     assert captured_jobs.get("session_id") == "sess-Y"
-    assert captured_jobs.get("names") == ["memory", "skill"]
-    assert calls == {"memory": 1, "skill": 1}
+    assert captured_jobs.get("names") == ["memory"]
+    assert calls == {"memory": 1, "skill": 0}
 
 
 # --------------------------------------------------------------------------- #
