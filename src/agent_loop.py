@@ -1569,6 +1569,62 @@ def _append_tool_results(
         )
 
 
+def _empty_microcompact_stats() -> Dict[str, int]:
+    return {
+        "passes": 0,
+        "results_cleared": 0,
+        "arguments_compacted": 0,
+        "tokens_saved": 0,
+    }
+
+
+def _merge_microcompact_stats(total: Dict[str, int], current: Optional[Dict[str, int]]) -> None:
+    if not current:
+        return
+    for key in ("passes", "results_cleared", "arguments_compacted", "tokens_saved"):
+        total[key] = int(total.get(key, 0) or 0) + int(current.get(key, 0) or 0)
+
+
+def _prepare_agent_round_context(
+    messages: List[Dict],
+    input_budget: int,
+    *,
+    reserve_tokens: int,
+) -> tuple[List[Dict], Dict[str, int], bool]:
+    """Microcompact then hard-trim the transient context for one agent round.
+
+    ``input_budget <= 0`` is the user's opt-out for soft trimming, so it also
+    disables microcompaction. The returned boolean reports whether the final
+    ``trim_for_context`` pass shortened the message list/content.
+    """
+    stats = _empty_microcompact_stats()
+    if not input_budget or input_budget <= 0:
+        return messages, stats, False
+
+    from src.context_compactor import microcompact_tool_history, trim_for_context
+
+    before_trim_tokens = estimate_tokens(messages)
+    compacted, micro_stats = microcompact_tool_history(
+        messages,
+        input_budget,
+        reserve_tokens=reserve_tokens,
+    )
+    _merge_microcompact_stats(stats, micro_stats)
+
+    usable_budget = max(1, int(input_budget or 0) - int(reserve_tokens or 0))
+    after_micro_tokens = estimate_tokens(compacted)
+    if after_micro_tokens <= usable_budget:
+        return compacted, stats, False
+
+    trimmed = trim_for_context(
+        compacted,
+        input_budget,
+        reserve_tokens=reserve_tokens,
+    )
+    was_trimmed = estimate_tokens(trimmed) < before_trim_tokens
+    return trimmed, stats, was_trimmed
+
+
 def _compute_final_metrics(
     messages: List[Dict],
     full_response: str,
@@ -2132,9 +2188,12 @@ async def stream_agent_loop(
             messages.insert(0, {"role": "system", "content": GUIDE_ONLY_DIRECTIVE})
     prep_timings["prompt_build"] = time.time() - _t2
 
+    _agent_input_budget = 0
+    _agent_reserve_tokens = 0
+    _microcompact_totals = _empty_microcompact_stats()
+
     _t3 = time.time()
     try:
-        from src.context_compactor import trim_for_context
         from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX, DEFAULT_BUDGET, budget_is_explicit as _budget_is_explicit
         from src.model_context import budget_context_for_model
 
@@ -2165,19 +2224,24 @@ async def stream_agent_loop(
                 budget_is_explicit,
                 hard_max=hard_max,
             )
-            trimmed_messages = trim_for_context(
+            _agent_input_budget = effective_budget
+            _agent_reserve_tokens = reserve_tokens
+            trimmed_messages, micro_stats, was_trimmed = _prepare_agent_round_context(
                 messages,
                 effective_budget,
                 reserve_tokens=reserve_tokens,
             )
+            _merge_microcompact_stats(_microcompact_totals, micro_stats)
             after_trim_tokens = estimate_tokens(trimmed_messages)
             if after_trim_tokens < before_trim_tokens:
                 logger.info(
-                    "[agent] soft-trimmed context: %s -> %s tokens (budget=%s, reserve=%s)",
+                    "[agent] prepared context: %s -> %s tokens (budget=%s, reserve=%s, micro_saved=%s, trimmed=%s)",
                     before_trim_tokens,
                     after_trim_tokens,
                     effective_budget,
                     reserve_tokens,
+                    micro_stats.get("tokens_saved", 0),
+                    was_trimmed,
                 )
                 messages = trimmed_messages
     except Exception as e:
@@ -2266,6 +2330,29 @@ async def stream_agent_loop(
     _exhausted_rounds = False
 
     for round_num in range(1, max_rounds + 1):
+        if round_num > 1 and _agent_input_budget > 0:
+            try:
+                _round_before_tokens = estimate_tokens(messages)
+                messages, _round_micro_stats, _round_trimmed = _prepare_agent_round_context(
+                    messages,
+                    _agent_input_budget,
+                    reserve_tokens=_agent_reserve_tokens,
+                )
+                _merge_microcompact_stats(_microcompact_totals, _round_micro_stats)
+                _round_after_tokens = estimate_tokens(messages)
+                if _round_after_tokens < _round_before_tokens:
+                    logger.info(
+                        "[agent] round %s context prepared: %s -> %s tokens "
+                        "(micro_saved=%s, trimmed=%s)",
+                        round_num,
+                        _round_before_tokens,
+                        _round_after_tokens,
+                        _round_micro_stats.get("tokens_saved", 0),
+                        _round_trimmed,
+                    )
+            except Exception as e:
+                logger.warning("[agent] round context microcompact skipped: %s", e)
+
         round_response = ""
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
         native_tool_calls = []  # populated if model uses function calling
@@ -3164,6 +3251,11 @@ async def stream_agent_loop(
         backend_prefill_tps=backend_prefill_tps,
     )
     metrics["requested_model"] = requested_model
+    if _microcompact_totals.get("passes", 0) > 0:
+        metrics["microcompaction"] = {
+            key: value for key, value in _microcompact_totals.items()
+            if value
+        }
     yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
 
     # Teacher-escalation: inline takeover visible in the chat stream.
