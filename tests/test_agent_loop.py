@@ -39,6 +39,7 @@ try:
         _classify_agent_request,
         _compute_final_metrics,
         _append_tool_results,
+        _prepare_agent_round_context,
         _MCP_KEYWORDS,
     )
     _IMPORTED_AGENT_LOOP = sys.modules.get("src.agent_loop")
@@ -388,6 +389,46 @@ class TestAppendToolResultsThoughtSignature:
         )
         # No empty/None extra_content leaks onto non-Gemini tool calls.
         assert "extra_content" not in messages[0]["tool_calls"][0]
+
+
+def test_prepare_agent_round_context_microcompacts_between_tool_rounds():
+    messages = [{"role": "system", "content": "You are Odysseus."}]
+    for i in range(9):
+        native = [{
+            "id": f"call_{i}",
+            "name": "bash",
+            "arguments": '{"cmd": "' + ("x" * 2000) + '"}',
+        }]
+        _append_tool_results(
+            messages,
+            "",
+            native,
+            [{}],
+            [f"round-{i}\n" + ("y" * 2400)],
+            used_native=True,
+            round_num=i + 1,
+        )
+
+    before = sum(len(str(m.get("content", ""))) for m in messages)
+    prepared, stats, was_trimmed = _prepare_agent_round_context(
+        messages,
+        input_budget=8000,
+        reserve_tokens=0,
+    )
+
+    assert stats["passes"] == 1
+    assert stats["tokens_saved"] > 0
+    assert was_trimmed is False
+    assert sum(len(str(m.get("content", ""))) for m in prepared) < before
+    # The most recent tool batch/result remains fully available for the next
+    # model call, while older bulky results are cleared.
+    assert prepared[-1]["role"] == "tool"
+    assert "round-8" in prepared[-1]["content"]
+    assert any(
+        m.get("role") == "tool"
+        and m.get("content") == "[Old tool result content cleared to preserve context]"
+        for m in prepared
+    )
 
 
 # ---------------------------------------------------------------------------

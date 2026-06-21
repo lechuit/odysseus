@@ -7,6 +7,7 @@ Summarizes older messages via the same LLM, preserving key context.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from src.model_context import get_context_length, estimate_tokens
@@ -39,6 +40,15 @@ def _content_as_text(content: Any) -> str:
 COMPACT_THRESHOLD = 0.85  # Trigger compaction at 85% of context window
 SUMMARY_MAX_TOKENS = 1024
 SMALL_CONTEXT_LIMIT = 8192  # Models with context <= this get aggressive trimming
+
+MICROCOMPACT_TRIGGER_RATIO = 0.70
+MICROCOMPACT_TARGET_RATIO = 0.55
+MICROCOMPACT_KEEP_RECENT_TOOL_RESULTS = 5
+MICROCOMPACT_MIN_RESULT_TOKENS = 256
+MICROCOMPACT_CLEARED_MESSAGE = "[Old tool result content cleared to preserve context]"
+MICROCOMPACT_TRUNCATED_ARGS_KEY = "_microcompacted_for_context"
+_TOOL_RESULTS_PREFIX = "[Tool execution results]"
+_PROTECTED_MICROCOMPACT_TOOLS = {"update_plan", "ask_user"}
 
 # Cursor-style self-summarization prompt — produces structured, dense summaries
 SELF_SUMMARY_SYSTEM_PROMPT = """You are summarizing a conversation to preserve context after compaction. Produce a structured summary that lets the conversation continue seamlessly.
@@ -185,6 +195,309 @@ def _truncate_tool_call_args(msg: Dict[str, Any], token_budget: int) -> Dict[str
     out = dict(msg)
     out["tool_calls"] = new_calls
     return out
+
+
+def _normalize_tool_name(name: Any) -> str:
+    """Return a normalized tool-ish token from a formatter heading/name."""
+    text = str(name or "").strip().lower().replace("-", "_")
+    if text.startswith("mcp:"):
+        text = text[4:].strip()
+    tokens = re.findall(r"[a-z0-9_]+", text)
+    return tokens[0] if tokens else ""
+
+
+def _is_microcompact_protected_tool(name: Any) -> bool:
+    return _normalize_tool_name(name) in _PROTECTED_MICROCOMPACT_TOOLS
+
+
+def _looks_like_tool_error(text: Any) -> bool:
+    """Heuristic used only to keep the most recent error result complete."""
+    if not isinstance(text, str) or not text:
+        return False
+    lower = text.lower()
+    if re.search(r"\*\*exit_code:\*\*\s*(?!0\b)\d+", lower):
+        return True
+    return bool(re.search(r"\b(error|failed|failure|exception|traceback)\b", lower))
+
+
+def _text_tool_sections(content: str) -> Optional[Dict[str, Any]]:
+    """Split a synthetic ``[Tool execution results]`` message into sections.
+
+    Non-native/tool-fence models receive tool output as a user message whose body
+    is a concatenation of ``format_tool_result`` blocks headed by ``### name``.
+    Splitting lets microcompaction preserve the newest/error/protected tool
+    sections instead of treating the whole round as one indivisible blob.
+    """
+    if not isinstance(content, str) or not content.startswith(_TOOL_RESULTS_PREFIX):
+        return None
+    matches = list(re.finditer(r"(?m)^###\s+([^\n]+?)\s*$", content))
+    if not matches:
+        return None
+    preamble = content[:matches[0].start()]
+    sections = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        sections.append({
+            "heading": match.group(1).strip(),
+            "text": content[match.start():end],
+        })
+    return {"preamble": preamble, "sections": sections}
+
+
+def _tool_result_token_estimate(text: Any) -> int:
+    if isinstance(text, str):
+        return _message_text_token_estimate(text)
+    return _message_text_token_estimate(_content_as_text(text))
+
+
+def _tool_arg_token_estimate(args: Any) -> int:
+    if args is None:
+        return 0
+    if not isinstance(args, str):
+        args = str(args)
+    return int(len(args) * 0.3) + 4
+
+
+def microcompact_tool_history(
+    messages: List[Dict],
+    input_budget: int,
+    *,
+    reserve_tokens: int = 512,
+    trigger_ratio: float = MICROCOMPACT_TRIGGER_RATIO,
+    target_ratio: float = MICROCOMPACT_TARGET_RATIO,
+    keep_recent: int = MICROCOMPACT_KEEP_RECENT_TOOL_RESULTS,
+    min_result_tokens: int = MICROCOMPACT_MIN_RESULT_TOKENS,
+) -> tuple[List[Dict], Dict[str, int]]:
+    """Clear old bulky tool payloads from the transient model context.
+
+    This is intentionally cheaper and less destructive than full LLM
+    compaction: it never summarizes, never drops messages, and never touches
+    normal user/system content. It only replaces old tool result bodies (and
+    matching old native tool-call arguments) with small placeholders while
+    preserving message shape, IDs, tool names, Gemini ``extra_content`` fields,
+    and assistant/tool pairing.
+
+    Returns ``(messages, stats)``. If no compaction was needed, the original list
+    is returned with zeroed stats.
+    """
+    stats = {
+        "passes": 0,
+        "results_cleared": 0,
+        "arguments_compacted": 0,
+        "tokens_saved": 0,
+    }
+    try:
+        usable_budget = int(input_budget or 0) - int(reserve_tokens or 0)
+    except (TypeError, ValueError):
+        usable_budget = 0
+    if usable_budget <= 0:
+        return messages, stats
+
+    before_tokens = estimate_tokens(messages)
+    trigger_tokens = max(1, int(usable_budget * trigger_ratio))
+    if before_tokens <= trigger_tokens:
+        return messages, stats
+
+    target_tokens = max(1, int(usable_budget * target_ratio))
+    keep_recent = max(1, int(keep_recent or 1))
+    min_result_tokens = max(1, int(min_result_tokens or 1))
+
+    # First pass: discover native tool call metadata and every compactable result
+    # in encounter order. Batch identity lets us keep the whole most recent round.
+    call_info_by_id: Dict[str, Dict[str, Any]] = {}
+    text_groups: Dict[int, Dict[str, Any]] = {}
+    candidates: List[Dict[str, Any]] = []
+    batch_seq = 0
+    active_native_batch: Optional[int] = None
+
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        if role == "assistant" and isinstance(msg.get("tool_calls"), list) and msg.get("tool_calls"):
+            batch_seq += 1
+            active_native_batch = batch_seq
+            for j, tc in enumerate(msg.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id")
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                name = fn.get("name", "") if isinstance(fn, dict) else ""
+                if tc_id:
+                    call_info_by_id[str(tc_id)] = {
+                        "assistant_index": i,
+                        "call_index": j,
+                        "name": name,
+                        "batch": active_native_batch,
+                    }
+            continue
+
+        if role == "tool":
+            tc_id = msg.get("tool_call_id")
+            info = call_info_by_id.get(str(tc_id)) if tc_id is not None else None
+            batch = info.get("batch") if info else active_native_batch
+            batch_seq = max(batch_seq, batch or batch_seq)
+            candidates.append({
+                "kind": "native",
+                "order": len(candidates),
+                "message_index": i,
+                "tool_call_id": str(tc_id) if tc_id is not None else "",
+                "assistant_index": info.get("assistant_index") if info else None,
+                "call_index": info.get("call_index") if info else None,
+                "name": info.get("name", "") if info else "",
+                "batch": batch or batch_seq,
+                "content": msg.get("content", ""),
+            })
+            continue
+
+        active_native_batch = None
+        if role == "user":
+            parsed = _text_tool_sections(msg.get("content", ""))
+            if parsed:
+                batch_seq += 1
+                text_groups[i] = parsed
+                for section_index, section in enumerate(parsed["sections"]):
+                    candidates.append({
+                        "kind": "text",
+                        "order": len(candidates),
+                        "message_index": i,
+                        "section_index": section_index,
+                        "name": section["heading"],
+                        "batch": batch_seq,
+                        "content": section["text"],
+                    })
+
+    if not candidates:
+        return messages, stats
+
+    latest_batch = max(c["batch"] for c in candidates)
+    keep_orders = {c["order"] for c in candidates[-keep_recent:]}
+    error_candidates = [c for c in candidates if _looks_like_tool_error(c.get("content", ""))]
+    if error_candidates:
+        keep_orders.add(error_candidates[-1]["order"])
+
+    eligible = [
+        c for c in candidates
+        if c["batch"] != latest_batch
+        and c["order"] not in keep_orders
+        and not _is_microcompact_protected_tool(c.get("name", ""))
+    ]
+    if not eligible:
+        return messages, stats
+
+    compacted = list(messages)
+
+    def _replace_native_result(candidate: Dict[str, Any]) -> bool:
+        idx = candidate["message_index"]
+        current = compacted[idx]
+        if current.get("content") == MICROCOMPACT_CLEARED_MESSAGE:
+            return False
+        if _tool_result_token_estimate(current.get("content", "")) <= min_result_tokens:
+            return False
+        cloned = dict(current)
+        cloned["content"] = MICROCOMPACT_CLEARED_MESSAGE
+        compacted[idx] = cloned
+        return True
+
+    def _replace_text_section(candidate: Dict[str, Any]) -> bool:
+        msg_index = candidate["message_index"]
+        section_index = candidate["section_index"]
+        parsed = text_groups.get(msg_index)
+        if not parsed:
+            return False
+        section = parsed["sections"][section_index]
+        if MICROCOMPACT_CLEARED_MESSAGE in section.get("text", ""):
+            return False
+        if _tool_result_token_estimate(section.get("text", "")) <= min_result_tokens:
+            return False
+        section["text"] = f"### {section['heading']}\n{MICROCOMPACT_CLEARED_MESSAGE}"
+        cloned = dict(compacted[msg_index])
+        cloned["content"] = parsed["preamble"] + "".join(s["text"] for s in parsed["sections"])
+        compacted[msg_index] = cloned
+        return True
+
+    def _compact_native_args(candidate: Dict[str, Any]) -> bool:
+        assistant_index = candidate.get("assistant_index")
+        call_index = candidate.get("call_index")
+        if assistant_index is None or call_index is None:
+            return False
+        assistant = compacted[assistant_index]
+        tool_calls = assistant.get("tool_calls")
+        if not isinstance(tool_calls, list) or call_index >= len(tool_calls):
+            return False
+        tc = tool_calls[call_index]
+        if not isinstance(tc, dict):
+            return False
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
+        if not isinstance(fn, dict):
+            return False
+        args = fn.get("arguments")
+        if _tool_arg_token_estimate(args) <= min_result_tokens:
+            return False
+        if isinstance(args, str):
+            try:
+                parsed_args = json.loads(args)
+            except Exception:
+                parsed_args = None
+            if isinstance(parsed_args, dict) and parsed_args.get(MICROCOMPACT_TRUNCATED_ARGS_KEY):
+                return False
+            original_chars = len(args)
+        else:
+            original_chars = len(str(args))
+        new_fn = dict(fn)
+        new_fn["arguments"] = json.dumps({
+            MICROCOMPACT_TRUNCATED_ARGS_KEY: True,
+            "original_chars": original_chars,
+        })
+        new_tc = dict(tc)
+        new_tc["function"] = new_fn
+        new_calls = list(tool_calls)
+        new_calls[call_index] = new_tc
+        new_assistant = dict(assistant)
+        new_assistant["tool_calls"] = new_calls
+        compacted[assistant_index] = new_assistant
+        return True
+
+    current_tokens = before_tokens
+    for candidate in eligible:
+        changed = False
+        if candidate["kind"] == "native":
+            if _replace_native_result(candidate):
+                stats["results_cleared"] += 1
+                changed = True
+            if _compact_native_args(candidate):
+                stats["arguments_compacted"] += 1
+                changed = True
+        elif candidate["kind"] == "text":
+            if _replace_text_section(candidate):
+                stats["results_cleared"] += 1
+                changed = True
+        if not changed:
+            continue
+        current_tokens = estimate_tokens(compacted)
+        if current_tokens <= target_tokens:
+            break
+
+    after_tokens = estimate_tokens(compacted)
+    saved = max(0, before_tokens - after_tokens)
+    if saved <= 0:
+        return messages, {
+            "passes": 0,
+            "results_cleared": 0,
+            "arguments_compacted": 0,
+            "tokens_saved": 0,
+        }
+
+    stats["passes"] = 1
+    stats["tokens_saved"] = saved
+    logger.info(
+        "[microcompact] %s -> %s tokens; cleared=%s args=%s target=%s budget=%s",
+        before_tokens,
+        after_tokens,
+        stats["results_cleared"],
+        stats["arguments_compacted"],
+        target_tokens,
+        usable_budget,
+    )
+    return compacted, stats
 
 
 def _truncate_message_to_token_budget(msg: Dict[str, Any], token_budget: int) -> Dict[str, Any]:
