@@ -30,6 +30,7 @@ def test_sensitive_ssh_dir():
     from src.tool_execution import _is_sensitive_path
     assert _is_sensitive_path("/home/user/.ssh/authorized_keys")
     assert _is_sensitive_path(os.path.expanduser("~") + "/.ssh/config")
+    assert _is_sensitive_path("/home/user/.SSH/config")
 
 
 def test_sensitive_gnupg_dir():
@@ -49,6 +50,13 @@ def test_sensitive_key_filenames():
     assert _is_sensitive_path("/tmp/id_rsa")
     assert _is_sensitive_path("/tmp/id_ed25519")
     assert _is_sensitive_path("/tmp/authorized_keys")
+
+
+def test_sensitive_cloud_and_cli_credentials():
+    from src.tool_execution import _is_sensitive_path
+    assert _is_sensitive_path("/tmp/.aws/credentials")
+    assert _is_sensitive_path("/tmp/.config/gh/hosts.yml")
+    assert _is_sensitive_path("/tmp/.cargo/credentials")
 
 
 def test_non_sensitive_path():
@@ -170,6 +178,23 @@ def test_rejects_empty_path():
         _resolve_tool_path("")
     with pytest.raises(ValueError, match="path is required"):
         _resolve_tool_path("   ")
+
+
+def test_rejects_ambiguous_path_syntax_for_write():
+    from src.tool_execution import _resolve_tool_path
+    with pytest.raises(ValueError, match="single line"):
+        _resolve_tool_path("/tmp/ok\nbad", for_write=True)
+    with pytest.raises(ValueError, match="null byte"):
+        _resolve_tool_path("/tmp/ok\x00bad", for_write=True)
+    with pytest.raises(ValueError, match="glob patterns"):
+        _resolve_tool_path("/tmp/*.txt", for_write=True)
+
+
+def test_read_paths_may_still_use_glob_characters_as_literals(tmp_path):
+    from src.tool_execution import _resolve_tool_path
+    f = tmp_path / "literal[1].txt"
+    f.write_text("ok")
+    assert _resolve_tool_path(str(f)) == os.path.realpath(str(f))
 
 
 def test_extra_roots_opt_in(tmp_path):

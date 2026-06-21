@@ -153,6 +153,17 @@ def test_protected_project_paths_ask_for_read_and_write(monkeypatch):
     )
     assert protected_write.behavior == "ask"
 
+    mixed_case = op.evaluate_tool_permission("read_file", ".GIT/config", session_id=sid)
+    assert mixed_case.behavior == "ask"
+
+    workflow = op.evaluate_tool_permission(
+        "write_file",
+        ".Github/workflows/ci.yml\nname: ci",
+        session_id=sid,
+    )
+    assert workflow.behavior == "ask"
+    assert "configuration/workflow" in workflow.reason
+
 
 def test_allowing_protected_write_does_not_allow_protected_read(monkeypatch):
     from src import operation_permissions as op
@@ -270,6 +281,34 @@ async def test_workspace_blocks_absolute_file_path_before_permission(monkeypatch
     )
 
     assert desc == "edit_file: BLOCKED"
+    assert result["blocked"] is True
+    assert "outside the workspace" in result["error"]
+    assert "ask_user" not in result
+
+
+@pytest.mark.asyncio
+async def test_workspace_blocks_search_path_before_permission(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.agent_tools import ToolBlock
+    from src.tool_execution import execute_tool_block
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "interactive_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    desc, result = await execute_tool_block(
+        ToolBlock("grep", json.dumps({"pattern": "x", "path": "/home/gabriel/.git"})),
+        owner="admin",
+        session_id="s-workspace-search-preflight",
+        workspace=str(workspace),
+    )
+
+    assert desc == "grep: BLOCKED"
     assert result["blocked"] is True
     assert "outside the workspace" in result["error"]
     assert "ask_user" not in result

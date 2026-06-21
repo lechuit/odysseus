@@ -455,12 +455,18 @@ _DANGEROUS_PATH_PARTS = {
     ".git",
     ".vscode",
     ".idea",
+    ".claude",
 }
 _DANGEROUS_PATH_PATTERNS = (
+    ".github/workflows/*",
     "*/.github/workflows/*",
+    "data/settings.json",
     "*/data/settings.json",
+    "settings.json",
     "*/settings.json",
+    "settings.local.json",
     "*/settings.local.json",
+    "odysseus/data/settings.json",
     "*/odysseus/data/settings.json",
 )
 
@@ -473,7 +479,8 @@ def _path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
         return None
     candidates = _path_candidates(path)
     for candidate in candidates:
-        parts = {part for part in candidate.split("/") if part}
+        candidate_norm = candidate.replace("\\", "/").casefold()
+        parts = {part for part in candidate_norm.split("/") if part}
         if parts.intersection(_DANGEROUS_PATH_PARTS):
             return PermissionDecision(
                 behavior="ask",
@@ -483,7 +490,7 @@ def _path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
                 suggested_rule=_rule_for_operation(op, "allow"),
                 severity="high",
             )
-        if any(fnmatch.fnmatch(candidate, pat) for pat in _DANGEROUS_PATH_PATTERNS):
+        if any(fnmatch.fnmatch(candidate_norm, pat) for pat in _DANGEROUS_PATH_PATTERNS):
             return PermissionDecision(
                 behavior="ask",
                 reason=f"{op.tool} targets a protected configuration/workflow path",

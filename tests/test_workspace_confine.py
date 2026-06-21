@@ -168,6 +168,22 @@ async def test_grep_and_ls_confined_e2e(ws, admin):
 
 
 @pytest.mark.asyncio
+async def test_glob_exact_pattern_cannot_escape_workspace(ws, admin):
+    outside = tempfile.mkdtemp()
+    outside_file = os.path.join(outside, "outside.txt")
+    with open(outside_file, "w") as f:
+        f.write("nope")
+
+    _, r = await execute_tool_block(
+        _block("glob", json.dumps({"pattern": outside_file})),
+        owner="a",
+        workspace=ws,
+    )
+    assert r["exit_code"] == 1
+    assert "pattern escapes the search root" in r["error"]
+
+
+@pytest.mark.asyncio
 async def test_subprocess_cwd_is_workspace_e2e(ws, admin):
     """python tool runs with cwd = workspace (OS-agnostic probe)."""
     _, r = await execute_tool_block(_block("python", "import os; print(os.getcwd())"), owner="a", workspace=ws)

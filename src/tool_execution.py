@@ -54,11 +54,14 @@ _AGENT_WORKDIR = DATA_DIR
 # ---------------------------------------------------------------------------
 
 _SENSITIVE_BASENAMES: set[str] = {
-    ".ssh", ".gnupg", ".gitconfig",
+    ".ssh", ".gnupg",
+    ".aws", ".azure", ".kube", ".docker",
+    ".gitconfig", ".git-credentials", ".gitmodules",
     ".bashrc", ".bash_profile", ".bash_logout",
     ".zshrc", ".zprofile", ".zshenv",
     ".profile", ".tcshrc", ".cshrc",
-    ".env", ".netrc",
+    ".env", ".netrc", ".npmrc", ".pypirc",
+    ".mcp.json", ".claude.json",
 }
 
 _SENSITIVE_FILE_PATTERNS: tuple[str, ...] = (
@@ -66,12 +69,57 @@ _SENSITIVE_FILE_PATTERNS: tuple[str, ...] = (
     "known_hosts",
 )
 
+_SENSITIVE_PATH_SEQUENCES: tuple[tuple[str, ...], ...] = (
+    (".config", "gh"),
+    (".config", "gcloud"),
+    (".config", "op"),
+    (".config", "rclone"),
+    (".cargo", "credentials"),
+)
+
+_WRITE_PATH_GLOB_RE = re.compile(r"[*?\[\]{}]")
+
+
+def _security_path_parts(path: str) -> list[str]:
+    """Return path parts normalized for conservative security comparison."""
+
+    normalized = str(path or "").replace("\\", "/")
+    return [part.casefold() for part in normalized.split("/") if part]
+
+
+def _has_path_sequence(parts: list[str], sequence: tuple[str, ...]) -> bool:
+    if not sequence or len(sequence) > len(parts):
+        return False
+    n = len(sequence)
+    return any(tuple(parts[i : i + n]) == sequence for i in range(len(parts) - n + 1))
+
+
+def _validate_model_path_syntax(raw_path: str, *, for_write: bool = False) -> str:
+    """Reject path spellings that are never useful for agent file tools.
+
+    File tools receive a single path string, not shell syntax.  Null bytes and
+    embedded newlines are ambiguous at best and dangerous at worst.  For write
+    tools, glob metacharacters are blocked because writes do not expand globs;
+    treating them as literal filenames is almost always a model mistake.
+    """
+
+    if raw_path is None or not str(raw_path).strip():
+        raise ValueError("path is required")
+    raw = str(raw_path).strip()
+    if "\x00" in raw:
+        raise ValueError("path contains a null byte")
+    if "\n" in raw or "\r" in raw:
+        raise ValueError("path must be a single line")
+    if for_write and _WRITE_PATH_GLOB_RE.search(raw):
+        raise ValueError("glob patterns are not allowed for write/edit paths")
+    return raw
+
 
 def _is_sensitive_path(resolved: str) -> bool:
     """Return True if *resolved* falls under a sensitive directory or
     matches a sensitive filename — regardless of what root it sits under.
     """
-    parts = resolved.split(os.sep)
+    parts = _security_path_parts(resolved)
     filenames: set[str] = {parts[-1]} if parts else set()
 
     # Check if any path component is a sensitive directory.
@@ -82,6 +130,10 @@ def _is_sensitive_path(resolved: str) -> bool:
     # Check filename against known sensitive files.
     for pat in _SENSITIVE_FILE_PATTERNS:
         if pat in filenames:
+            return True
+
+    for sequence in _SENSITIVE_PATH_SEQUENCES:
+        if _has_path_sequence(parts, sequence):
             return True
 
     return False
@@ -136,7 +188,7 @@ def _tool_path_roots() -> list[str]:
     return out
 
 
-def _resolve_tool_path(raw_path: str) -> str:
+def _resolve_tool_path(raw_path: str, *, for_write: bool = False) -> str:
     """Resolve and confine a model-supplied path.
 
     Order of checks:
@@ -153,10 +205,9 @@ def _resolve_tool_path(raw_path: str) -> str:
     """
     ws = get_active_workspace()
     if ws:
-        return _resolve_tool_path_in_workspace(ws, raw_path)
-    if raw_path is None or not str(raw_path).strip():
-        raise ValueError("path is required")
-    expanded = os.path.expanduser(str(raw_path).strip())
+        return _resolve_tool_path_in_workspace(ws, raw_path, for_write=for_write)
+    raw = _validate_model_path_syntax(raw_path, for_write=for_write)
+    expanded = os.path.expanduser(raw)
     resolved = os.path.realpath(expanded)
 
     if _is_sensitive_path(resolved):
@@ -179,7 +230,7 @@ def _resolve_tool_path(raw_path: str) -> str:
     )
 
 
-def _resolve_tool_path_in_workspace(workspace: str, raw_path: str) -> str:
+def _resolve_tool_path_in_workspace(workspace: str, raw_path: str, *, for_write: bool = False) -> str:
     """Confine a model-supplied path to the active workspace.
 
     Layered on top of upstream's path policy: the workspace is the allowed
@@ -188,10 +239,9 @@ def _resolve_tool_path_in_workspace(workspace: str, raw_path: str) -> str:
     inside it. When no workspace is set, callers use _resolve_tool_path (the
     default data/tmp allowlist) instead.
     """
-    if raw_path is None or not str(raw_path).strip():
-        raise ValueError("path is required")
+    raw = _validate_model_path_syntax(raw_path, for_write=for_write)
     base = os.path.realpath(workspace)
-    expanded = os.path.expanduser(str(raw_path).strip())
+    expanded = os.path.expanduser(raw)
     candidate = expanded if os.path.isabs(expanded) else os.path.join(base, expanded)
     resolved = os.path.realpath(candidate)
     if not os.path.isabs(expanded) and not os.path.exists(resolved):
@@ -254,7 +304,7 @@ def _workspace_path_violation_before_permission(tool: str, content: str) -> Opti
     """
 
     ws = get_active_workspace()
-    if not ws or tool not in {"read_file", "write_file", "edit_file"}:
+    if not ws or tool not in {"read_file", "write_file", "edit_file", "grep", "glob", "ls"}:
         return None
     try:
         from src.operation_permissions import operation_from_tool
@@ -262,7 +312,7 @@ def _workspace_path_violation_before_permission(tool: str, content: str) -> Opti
         op = operation_from_tool(tool, content or "")
         path = op.path or op.value
         if path:
-            _resolve_tool_path_in_workspace(ws, path)
+            _resolve_tool_path_in_workspace(ws, path, for_write=tool in {"write_file", "edit_file"})
     except ValueError as exc:
         return str(exc)
     except Exception:

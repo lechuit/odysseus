@@ -95,7 +95,7 @@ class EditFileTool:
         if not raw_path:
             return {"error": "edit_file: path required", "exit_code": 1}
         try:
-            path = _resolve_tool_path(raw_path)
+            path = _resolve_tool_path(raw_path, for_write=True)
         except ValueError as e:
             return {"error": f"edit_file: {e}", "exit_code": 1}
         if old == "":
@@ -239,7 +239,7 @@ class WriteFileTool:
         raw_path = lines[0].strip()
         body = lines[1] if len(lines) > 1 else ""
         try:
-            path = _resolve_tool_path(raw_path)
+            path = _resolve_tool_path(raw_path, for_write=True)
         except ValueError as e:
             return {"error": f"write_file: {e}", "exit_code": 1}
         try:
@@ -351,6 +351,13 @@ class GlobTool:
             # Resolve them without recursively walking the directory tree.
             if not any(char in norm_pattern for char in "*?["):
                 candidate = os.path.normpath(os.path.join(base, norm_pattern))
+                try:
+                    real_base = os.path.normcase(os.path.realpath(base))
+                    real_candidate = os.path.normcase(os.path.realpath(candidate))
+                    if os.path.commonpath([real_candidate, real_base]) != real_base:
+                        return None, "glob: pattern escapes the search root", 0
+                except ValueError:
+                    return None, "glob: pattern escapes the search root", 0
                 if os.path.exists(candidate):
                     return [candidate], None, 0
 
