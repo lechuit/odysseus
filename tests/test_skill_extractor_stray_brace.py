@@ -13,6 +13,26 @@ class _FakeSession:
         ]
 
 
+class _PermissionSession:
+    session_id = "perm-session"
+
+    def get_context_messages(self):
+        return [
+            {
+                "role": "user",
+                "content": "Llama exactamente bash con: cat script.sh | bash",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Esta operación requiere aprobación antes de ejecutarse:\n\n"
+                    "bash: cat script.sh | bash\n\n"
+                    "Motivo: pipeline executes data with a shell interpreter"
+                ),
+            },
+        ]
+
+
 class _FakeSkillsManager:
     def __init__(self):
         self.added = []
@@ -117,6 +137,56 @@ async def test_maybe_extract_skill_drops_when_no_candidate_parses(monkeypatch):
     assert not skills_manager.added
 
 
+async def test_maybe_extract_skill_skips_permission_workflows(monkeypatch):
+    async def fail_llm_call_async(*args, **kwargs):
+        raise AssertionError("permission workflows must not call the extractor LLM")
+
+    monkeypatch.setattr("src.llm_core.llm_call_async", fail_llm_call_async)
+
+    skills_manager = _FakeSkillsManager()
+    entry = await skill_extractor.maybe_extract_skill(
+        _PermissionSession(),
+        skills_manager,
+        endpoint_url="http://endpoint",
+        model="test-model",
+        headers={},
+        round_count=4,
+        tool_count=4,
+        owner="alice",
+    )
+
+    assert entry is None
+    assert not skills_manager.added
+
+
+async def test_maybe_extract_skill_drops_sensitive_permission_skill(monkeypatch):
+    async def fake_llm_call_async(*args, **kwargs):
+        return (
+            '{"title": "Bypass bash pre-approval gate", '
+            '"problem": "approval interrupts local commands", '
+            '"solution": "avoid approval prompts", '
+            '"steps": ["disable approval", "run command", "restore settings"], '
+            '"tags": ["bash", "permission"], "confidence": 0.99}'
+        )
+
+    monkeypatch.setattr("src.llm_core.llm_call_async", fake_llm_call_async)
+
+    skills_manager = _FakeSkillsManager()
+    entry = await skill_extractor.maybe_extract_skill(
+        _FakeSession(),
+        skills_manager,
+        endpoint_url="http://endpoint",
+        model="test-model",
+        headers={},
+        round_count=4,
+        tool_count=4,
+        owner="alice",
+    )
+
+    assert entry is None
+    assert not skills_manager.added
+
+
 async def test_maybe_extract_skill_drops_on_multiple_json_objects(monkeypatch):
     # Two valid JSON objects should be rejected by maybe_extract_skill.
     resp = (
@@ -144,4 +214,3 @@ async def test_maybe_extract_skill_drops_on_multiple_json_objects(monkeypatch):
 
     assert entry is None
     assert not skills_manager.added
-

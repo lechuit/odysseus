@@ -1326,6 +1326,7 @@ def setup_chat_routes(
                 # ── Agent mode: full agent loop with tools ──
                 _agent_rounds = 0
                 _agent_tool_calls = 0
+                _agent_permission_requested = False
                 _answered_by = None  # set if the selected model failed and a fallback answered
                 _requested_model = sess.model
                 _actual_model = None
@@ -1390,6 +1391,14 @@ def setup_chat_routes(
                                         _agent_rounds = max(_agent_rounds, data.get("round", 1))
                                     elif data.get("type") == "tool_start":
                                         _agent_tool_calls += 1
+                                    elif data.get("type") == "ask_user":
+                                        _ask_data = data.get("data") or {}
+                                        if isinstance(_ask_data, dict) and _ask_data.get("permission_request"):
+                                            _agent_permission_requested = True
+                                    elif data.get("type") == "tool_output":
+                                        _ask_data = data.get("ask_user") or {}
+                                        if isinstance(_ask_data, dict) and _ask_data.get("permission_request"):
+                                            _agent_permission_requested = True
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.
@@ -1435,7 +1444,7 @@ def setup_chat_routes(
                                     agent_tool_calls=_agent_tool_calls,
                                     skills_manager=skills_manager,
                                     owner=_user,
-                                    extract_skills=user_requested_agent,
+                                    extract_skills=user_requested_agent and not _agent_permission_requested,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )
                             _stream_set(session, status="done")

@@ -108,6 +108,16 @@ def test_operation_permission_deny_short_circuits_agent_loop():
     assert "Do not pass the label \"Denegar\" through context building" in source
 
 
+def test_permission_ask_turns_disable_skill_extraction():
+    """Permission prompts are security-control turns, not reusable workflows."""
+    source = _CHAT_ROUTES.read_text(encoding="utf-8")
+
+    assert "_agent_permission_requested = False" in source
+    assert "_agent_permission_requested = True" in source
+    assert "permission_request" in source
+    assert "extract_skills=user_requested_agent and not _agent_permission_requested" in source
+
+
 # ── Functional tests of the disabled-tools logic ───────────────
 
 

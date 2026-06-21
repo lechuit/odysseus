@@ -47,6 +47,33 @@ MIN_CONFIDENCE = 0.6
 # How many recent messages to include
 CONTEXT_WINDOW = 12
 
+_PERMISSION_WORKFLOW_MARKERS = (
+    "esta operación requiere aprobación",
+    "operation permission",
+    "permission_request",
+    "permiso denegado",
+    "permission denied",
+    "requires approval before",
+    "requires permission",
+    "motivo: command may change local state",
+    "motivo: pipeline executes data with a shell interpreter",
+)
+
+_SENSITIVE_SKILL_TERMS = (
+    "bypass",
+    "pre-approval",
+    "preapproval",
+    "approval gate",
+    "permission gate",
+    "permission prompt",
+    "operation permission",
+    "disable approval",
+    "skip approval",
+    "avoid approval",
+    "sandbox escape",
+    "disable sandbox",
+)
+
 
 def _skill_dicts(skills):
     for skill in skills or []:
@@ -119,6 +146,30 @@ def _extract_json_object(text: str) -> Optional[dict]:
     return top_level[0][2]
 
 
+def _looks_like_permission_workflow(text: str) -> bool:
+    haystack = (text or "").lower()
+    return any(marker in haystack for marker in _PERMISSION_WORKFLOW_MARKERS)
+
+
+def _looks_like_sensitive_skill(data: dict) -> bool:
+    """Reject auto-learned skills about bypassing security/permission gates.
+
+    Users can still create such documentation manually if they really want it,
+    but the background learner should never infer and publish a reusable
+    procedure from a permission/sandbox test or denial flow.
+    """
+
+    parts = [
+        str(data.get("title") or ""),
+        str(data.get("problem") or ""),
+        str(data.get("solution") or ""),
+        " ".join(str(step) for step in (data.get("steps") or [])),
+        " ".join(str(tag) for tag in (data.get("tags") or [])),
+    ]
+    haystack = " ".join(parts).lower()
+    return any(term in haystack for term in _SENSITIVE_SKILL_TERMS)
+
+
 async def maybe_extract_skill(
     session,
     skills_manager,
@@ -182,6 +233,9 @@ async def maybe_extract_skill(
             conv_lines.append(f"[{role}] {content}")
 
         conversation = "\n".join(conv_lines)
+        if _looks_like_permission_workflow(conversation):
+            logger.info("[skill-extract] skipped permission/approval workflow")
+            return None
 
         prompt = SKILL_EXTRACT_PROMPT.format(rounds=round_count, tool_count=tool_count)
 
@@ -238,6 +292,9 @@ async def maybe_extract_skill(
         title = data.get("title", "").strip()
         if not title:
             logger.debug("[skill-extract] LLM returned object with no title, dropping")
+            return None
+        if _looks_like_sensitive_skill(data):
+            logger.info("[skill-extract] dropped sensitive permission/sandbox skill: %s", title)
             return None
 
         # Honour the model's own reliability/reusability estimate — low-
