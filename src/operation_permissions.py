@@ -538,12 +538,13 @@ _BASH_MUTATING_COMMANDS = {
     "mv",
     "rm",
     "rmdir",
+    "ln",
+    "tee",
+}
+_BASH_DANGEROUS_COMMANDS = {
     "chmod",
     "chown",
     "chgrp",
-    "ln",
-}
-_BASH_DANGEROUS_COMMANDS = {
     "sudo",
     "su",
     "ssh",
@@ -558,24 +559,59 @@ _BASH_DANGEROUS_COMMANDS = {
     "pkill",
     "launchctl",
     "crontab",
+    "osascript",
+    "security",
 }
-_SHELL_WRAPPERS = {
+_SHELL_INTERPRETERS = {
     "sh",
     "bash",
     "zsh",
     "fish",
     "dash",
+}
+_SHELL_WRAPPERS = {
     "env",
     "xargs",
     "nohup",
     "timeout",
     "nice",
     "stdbuf",
+    "time",
 }
+_OUTPUT_REDIRECT_RE = re.compile(r"(?:^|\s)\d*>>?\s*(?!&\d)(?P<target>[^\s;|&]+)")
+_SENSITIVE_SHELL_PATH_RE = re.compile(
+    r"(^|/|\$home/|~/)"
+    r"("
+    r"\.ssh|\.gnupg|\.aws|\.env|authorized_keys|id_rsa|id_ed25519|"
+    r"\.git(/|$)|\.vscode(/|$)|\.idea(/|$)|\.github/workflows|"
+    r"settings\.json|settings\.local\.json"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _split_shell_segments(command: str) -> List[str]:
-    return [seg.strip() for seg in re.split(r"\s*(?:&&|\|\||;|\n)\s*", command or "") if seg.strip()]
+    # Split on common shell control operators. This is intentionally a
+    # conservative lexer, not a full shell parser: false positives result in
+    # an approval prompt, while false negatives can execute. Include single
+    # pipes so "cat script | bash" is evaluated as a shell invocation.
+    return [seg.strip() for seg in re.split(r"\s*(?:&&|\|\||\||;|\n)\s*", command or "") if seg.strip()]
+
+
+def _has_output_redirection(segment: str) -> bool:
+    return bool(_OUTPUT_REDIRECT_RE.search(segment or ""))
+
+
+def _redirection_targets_sensitive_path(segment: str) -> bool:
+    for match in _OUTPUT_REDIRECT_RE.finditer(segment or ""):
+        target = match.group("target").strip("'\"")
+        if _SENSITIVE_SHELL_PATH_RE.search(target):
+            return True
+    return False
+
+
+def _pipelines_into_shell(command: str) -> bool:
+    return bool(re.search(r"\|\s*(?:sh|bash|zsh|fish|dash)\b", command or "", re.IGNORECASE))
 
 
 def _first_token(segment: str) -> Tuple[str, List[str]]:
@@ -601,13 +637,23 @@ def classify_bash_command(command: str) -> Tuple[str, str]:
     low = cmd.lower()
     if re.search(r"\brm\s+(-[^\n;|&]*r[^\n;|&]*f|-[^\n;|&]*f[^\n;|&]*r)\s+(/|\$home|~)(?:\s|$)", low):
         return "dangerous", "recursive forced removal of a root/home path"
-    if re.search(r"\bcurl\b.+\|\s*(?:sh|bash|zsh)\b", low) or re.search(r"\bwget\b.+\|\s*(?:sh|bash|zsh)\b", low):
+    if _pipelines_into_shell(cmd):
+        return "dangerous", "pipeline executes data with a shell interpreter"
+    if re.search(r"\bcurl\b.+\|\s*(?:sh|bash|zsh|fish|dash)\b", low) or re.search(r"\bwget\b.+\|\s*(?:sh|bash|zsh|fish|dash)\b", low):
         return "dangerous", "download-and-execute pipeline"
-    if re.search(r">\s*(?:~?/|/).*(?:\.ssh|\.gnupg|\.env|authorized_keys|id_rsa|id_ed25519)", low):
+    if re.search(r"\bfind\b.*\s-(?:delete|exec|execdir|ok|okdir)\b", low):
+        return "dangerous", "find command deletes files or executes another command"
+    if _redirection_targets_sensitive_path(cmd):
         return "dangerous", "redirection targets a sensitive path"
 
     classifications: List[str] = []
     for segment in _split_shell_segments(cmd):
+        if _redirection_targets_sensitive_path(segment):
+            classifications.append("dangerous")
+            continue
+        if _has_output_redirection(segment):
+            classifications.append("mutating")
+            continue
         base, parts = _first_token(segment)
         if not base:
             classifications.append("ambiguous")
@@ -615,8 +661,14 @@ def classify_bash_command(command: str) -> Tuple[str, str]:
         if base in _BASH_DANGEROUS_COMMANDS:
             classifications.append("dangerous")
             continue
-        if base in _SHELL_WRAPPERS and any(part in {"-c", "-lc", "-ic"} for part in parts[1:3]):
+        if base in _SHELL_INTERPRETERS:
             classifications.append("dangerous")
+            continue
+        if base in _SHELL_WRAPPERS:
+            if any(part in {"-c", "-lc", "-ic"} for part in parts[1:]):
+                classifications.append("dangerous")
+            else:
+                classifications.append("mutating")
             continue
         if base == "git":
             sub = parts[1] if len(parts) > 1 else ""
@@ -634,6 +686,9 @@ def classify_bash_command(command: str) -> Tuple[str, str]:
         if base in {"pip", "pip3"}:
             sub = parts[1] if len(parts) > 1 else ""
             classifications.append("mutating" if sub in {"install", "uninstall"} else "ambiguous")
+            continue
+        if base == "find" and any(part in {"-delete", "-exec", "-execdir", "-ok", "-okdir"} for part in parts[1:]):
+            classifications.append("dangerous")
             continue
         if base in _BASH_MUTATING_COMMANDS:
             classifications.append("mutating")

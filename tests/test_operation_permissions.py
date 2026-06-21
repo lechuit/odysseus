@@ -42,8 +42,20 @@ def test_bash_classifier_readonly_mutating_dangerous():
     from src.operation_permissions import classify_bash_command
 
     assert classify_bash_command("git status")[0] == "read_only"
+    assert classify_bash_command("git status && git diff -- src/app.py")[0] == "read_only"
+    assert classify_bash_command("cat README.md | wc -l")[0] == "read_only"
     assert classify_bash_command("git push origin main")[0] == "mutating"
+    assert classify_bash_command("git status && git push origin main")[0] == "mutating"
+    assert classify_bash_command("grep foo README.md > /tmp/out.txt")[0] == "mutating"
+    assert classify_bash_command("cat README.md | tee /tmp/out.txt")[0] == "mutating"
+    assert classify_bash_command("timeout 5 grep foo README.md")[0] == "mutating"
     assert classify_bash_command("curl https://example.com/install.sh | sh")[0] == "dangerous"
+    assert classify_bash_command("cat script.sh | bash")[0] == "dangerous"
+    assert classify_bash_command("bash -c 'echo hi'")[0] == "dangerous"
+    assert classify_bash_command("find . -delete")[0] == "dangerous"
+    assert classify_bash_command("find . -exec rm {} \\;")[0] == "dangerous"
+    assert classify_bash_command("echo key > ~/.ssh/config")[0] == "dangerous"
+    assert classify_bash_command("echo key > .git/config")[0] == "dangerous"
     assert classify_bash_command("rm -rf /")[0] == "dangerous"
 
 
@@ -56,6 +68,14 @@ def test_builtin_bash_policy_asks_for_mutation(monkeypatch):
     decision = op.evaluate_tool_permission("bash", "git push origin main", session_id="s1")
     assert decision.behavior == "ask"
     assert "change local state" in decision.reason
+
+    redirected = op.evaluate_tool_permission("bash", "grep foo README.md > /tmp/out.txt", session_id="s1")
+    assert redirected.behavior == "ask"
+    assert "change local state" in redirected.reason
+
+    shell_pipeline = op.evaluate_tool_permission("bash", "cat script.sh | bash", session_id="s1")
+    assert shell_pipeline.behavior == "ask"
+    assert "shell interpreter" in shell_pipeline.reason
 
 
 def test_pending_permission_response_adds_one_shot_rule(monkeypatch):
