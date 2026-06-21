@@ -110,6 +110,61 @@ def test_permission_resume_note_and_tools_for_file_approval(monkeypatch):
     assert ".git/config" in note
 
 
+def test_protected_project_paths_ask_for_read_and_write(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-protected-path-read"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    normal_read = op.evaluate_tool_permission("read_file", "src/app.py", session_id=sid)
+    assert normal_read.behavior == "passthrough"
+
+    protected_read = op.evaluate_tool_permission("read_file", ".git/config", session_id=sid)
+    assert protected_read.behavior == "ask"
+    assert "protected project/control directory" in protected_read.reason
+
+    protected_write = op.evaluate_tool_permission(
+        "edit_file",
+        json.dumps({"path": ".git/config", "old": "x", "new": "y"}),
+        session_id=sid,
+    )
+    assert protected_write.behavior == "ask"
+
+
+def test_allowing_protected_write_does_not_allow_protected_read(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-write-does-not-allow-read"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    decision = op.evaluate_tool_permission(
+        "edit_file",
+        json.dumps({"path": ".git/config", "old": "x", "new": "y"}),
+        session_id=sid,
+    )
+    assert decision.behavior == "ask"
+    op.register_pending_approval(sid, decision)
+
+    consumed = op.consume_pending_permission_response(sid, "Permitir una vez")
+    assert consumed["decision"] == "allow_once"
+
+    allowed_write = op.evaluate_tool_permission(
+        "edit_file",
+        json.dumps({"path": ".git/config", "old": "x", "new": "y"}),
+        session_id=sid,
+    )
+    assert allowed_write.behavior == "allow"
+
+    protected_read = op.evaluate_tool_permission("read_file", ".git/config", session_id=sid)
+    assert protected_read.behavior == "ask"
+
+
 def test_permission_deny_does_not_resume_write_tools(monkeypatch):
     from src import operation_permissions as op
 

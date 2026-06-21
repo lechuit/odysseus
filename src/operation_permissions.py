@@ -472,10 +472,9 @@ def _path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
     if not path:
         return None
     candidates = _path_candidates(path)
-    mutating = op.tool in {"write_file", "edit_file"}
     for candidate in candidates:
         parts = {part for part in candidate.split("/") if part}
-        if mutating and parts.intersection(_DANGEROUS_PATH_PARTS):
+        if parts.intersection(_DANGEROUS_PATH_PARTS):
             return PermissionDecision(
                 behavior="ask",
                 reason=f"{op.tool} targets a protected project/control directory",
@@ -484,7 +483,7 @@ def _path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
                 suggested_rule=_rule_for_operation(op, "allow"),
                 severity="high",
             )
-        if mutating and any(fnmatch.fnmatch(candidate, pat) for pat in _DANGEROUS_PATH_PATTERNS):
+        if any(fnmatch.fnmatch(candidate, pat) for pat in _DANGEROUS_PATH_PATTERNS):
             return PermissionDecision(
                 behavior="ask",
                 reason=f"{op.tool} targets a protected configuration/workflow path",
