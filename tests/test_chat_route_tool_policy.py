@@ -94,6 +94,20 @@ def test_disabled_tools_does_not_bash_when_allow_bash_is_none():
     )
 
 
+def test_operation_permission_deny_short_circuits_agent_loop():
+    """A Denegar reply is a permission-control event, not a fresh task.
+
+    The route should stream a terminal assistant message directly instead of
+    sending the denial label through memory/RAG/model/tool selection again.
+    """
+    source = _CHAT_ROUTES.read_text(encoding="utf-8")
+
+    assert 'permission_resume_decision == "deny"' in source
+    assert "_operation_permission_denied_stream" in source
+    assert "return StreamingResponse(_operation_permission_denied_stream()" in source
+    assert "Do not pass the label \"Denegar\" through context building" in source
+
+
 # ── Functional tests of the disabled-tools logic ───────────────
 
 

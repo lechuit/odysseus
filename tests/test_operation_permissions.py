@@ -202,7 +202,12 @@ def test_permission_deny_does_not_resume_write_tools(monkeypatch):
 
     assert consumed["decision"] == "deny"
     assert consumed["resume_tools"] == []
+    assert consumed["reason"]
     assert "denied" in op.permission_resume_note(consumed).lower()
+    user_message = op.permission_denied_user_message(consumed)
+    assert "No ejecuté" in user_message
+    assert "git push origin main" in user_message
+    assert consumed["reason"] in user_message
 
 
 @pytest.mark.asyncio

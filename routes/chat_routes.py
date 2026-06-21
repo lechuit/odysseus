@@ -636,8 +636,14 @@ def setup_chat_routes(
         permission_context_note = ""
         permission_resume_tools = None
         permission_resume_decision = ""
+        permission_denied_stream_message = ""
+        permission_denied_metadata: Optional[Dict[str, Any]] = None
         try:
-            from src.operation_permissions import consume_pending_permission_response, permission_resume_note
+            from src.operation_permissions import (
+                consume_pending_permission_response,
+                permission_denied_user_message,
+                permission_resume_note,
+            )
 
             _perm_response = consume_pending_permission_response(
                 session,
@@ -650,9 +656,50 @@ def setup_chat_routes(
                 _resume_tools = _perm_response.get("resume_tools") or []
                 if permission_resume_decision != "deny" and _resume_tools:
                     permission_resume_tools = set(str(t) for t in _resume_tools if t)
+                if permission_resume_decision == "deny":
+                    permission_denied_stream_message = permission_denied_user_message(_perm_response)
+                    permission_denied_metadata = {
+                        "operation_permission": {
+                            "decision": "deny",
+                            "operation": _perm_response.get("operation") or {},
+                            "reason": _perm_response.get("reason") or "",
+                        },
+                        "model": sess.model,
+                    }
                 logger.info("[operation-permissions] %s", permission_context_note)
         except Exception as _perm_exc:
             logger.warning("Failed to consume pending operation permission: %s", _perm_exc)
+
+        if permission_resume_decision == "deny" and permission_denied_stream_message:
+            async def _operation_permission_denied_stream() -> AsyncGenerator[str, None]:
+                _active_streams[session] = {
+                    "status": "streaming",
+                    "partial": "",
+                    "query": message,
+                    "is_research": False,
+                    "mode": chat_mode or "agent",
+                }
+                try:
+                    # Do not pass the label "Denegar" through context building,
+                    # memory/RAG, or the model. It is a control response to a
+                    # pending permission prompt, not a fresh user task.
+                    sess.add_message(ChatMessage("user", message))
+                    sess.add_message(
+                        ChatMessage(
+                            "assistant",
+                            permission_denied_stream_message,
+                            metadata=permission_denied_metadata,
+                        )
+                    )
+                    if not incognito:
+                        session_manager.save_sessions()
+                    yield f"data: {json.dumps({'delta': permission_denied_stream_message})}\n\n"
+                    yield f"data: {json.dumps({'type': 'metrics', 'data': {'total_time': 0}})}\n\n"
+                    yield "data: [DONE]\n\n"
+                finally:
+                    _active_streams.pop(session, None)
+
+            return StreamingResponse(_operation_permission_denied_stream(), media_type="text/event-stream")
 
         # Check for research_pending BEFORE mode persist overwrites it
         do_research = str(use_research).lower() == "true"

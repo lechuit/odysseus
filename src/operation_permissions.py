@@ -937,6 +937,26 @@ def permission_resume_note(consumed: Mapping[str, Any]) -> str:
     )
 
 
+def permission_denied_user_message(consumed: Mapping[str, Any]) -> str:
+    """Return the terminal assistant message for a denied permission prompt.
+
+    Denials are different from approvals: the user did not provide a new task,
+    they explicitly rejected an operation.  The route should therefore close
+    the permission turn without sending "Denegar" through the model again.
+    """
+
+    op = consumed.get("operation") or {}
+    if not isinstance(op, Mapping):
+        op = {}
+    description = str(op.get("description") or op.get("tool") or "la operación")
+    reason = str(consumed.get("reason") or "").strip()
+    message = f"Permiso denegado. No ejecuté: {description}."
+    if reason:
+        message += f"\n\nMotivo: {reason}"
+    message += "\n\nSi quieres que busque una alternativa segura, dímelo explícitamente."
+    return message
+
+
 def permission_ask_payload(decision: PermissionDecision) -> Dict[str, Any]:
     op = decision.operation or Operation(tool="unknown")
     question = (
@@ -996,6 +1016,7 @@ def consume_pending_permission_response(
             "decision": "deny",
             "message": f"Permiso denegado para: {op.get('description') or op.get('tool')}",
             "operation": op,
+            "reason": str(pending.get("reason") or ""),
             "resume_tools": [],
         }
     if action == "allow_once":
