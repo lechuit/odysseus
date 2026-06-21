@@ -27,7 +27,7 @@ def _events(chunks):
     return events
 
 
-def _patch_basics(monkeypatch, streams, executed):
+def _patch_basics(monkeypatch, streams, executed, first_text=None):
     monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default, raising=False)
     monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None, raising=False)
     monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10, raising=False)
@@ -36,7 +36,7 @@ def _patch_basics(monkeypatch, streams, executed):
         round_index = len(streams)
         streams.append(messages)
         if round_index == 0:
-            text = (
+            text = first_text or (
                 "Dado que el workspace actual es `/Users/gabrielpena`, voy a "
                 "intentar leerlo usando la ruta completa.\n\n"
                 "Voy a reintentar la lectura del archivo en la carpeta Desktop."
@@ -83,6 +83,38 @@ def test_spanish_tool_promise_is_nudged_and_executed(monkeypatch):
     assert len(executed) == 1
     assert executed[0].tool_type == "read_file"
     assert "/Users/gabrielpena/Desktop/resumen-sincronizacion-rutas-facturas.md" in executed[0].content
+    assert any(event.get("type") == "agent_step" and event.get("round") == 2 for event in events)
+
+
+def test_spanish_intentarlo_promise_is_nudged_and_executed(monkeypatch):
+    streams = []
+    executed = []
+    _patch_basics(
+        monkeypatch,
+        streams,
+        executed,
+        first_text=(
+            "Voy a intentarlo una vez más para leer el archivo `index.js`. "
+            "Haré el intento de nuevo para capturar el código.\n\n"
+            "**Intentaré leer `index.js` ahora.**"
+        ),
+    )
+
+    chunks = _collect(
+        agent_loop.stream_agent_loop(
+            "http://localhost:8000/v1",
+            "gemma-4-E4B-it-Q4_K_M.gguf",
+            [{"role": "user", "content": "intenta leer todo nuevamente"}],
+            relevant_tools={"read_file"},
+            max_rounds=4,
+            _is_teacher_run=True,
+        )
+    )
+    events = _events(chunks)
+
+    assert len(streams) == 3
+    assert len(executed) == 1
+    assert executed[0].tool_type == "read_file"
     assert any(event.get("type") == "agent_step" and event.get("round") == 2 for event in events)
 
 

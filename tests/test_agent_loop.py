@@ -74,6 +74,33 @@ def test_polish_internet_search_request_classifies_as_web():
     assert "web" in intent["domains"]
 
 
+def test_spanish_todo_does_not_trigger_notes_domain():
+    intent = _classify_agent_request([], "lee todo completamente para hacer analisis")
+
+    assert "notes_calendar_tasks" not in intent["domains"]
+
+
+def test_english_todo_list_still_triggers_notes_domain():
+    intent = _classify_agent_request([], "add milk to my todo list")
+
+    assert intent["low_signal"] is False
+    assert "notes_calendar_tasks" in intent["domains"]
+
+
+def test_spanish_task_request_triggers_notes_domain():
+    intent = _classify_agent_request([], "agrega una tarea para mañana")
+
+    assert intent["low_signal"] is False
+    assert "notes_calendar_tasks" in intent["domains"]
+
+
+def test_spanish_file_requests_trigger_files_domain():
+    for text in ("analiza el proyecto", "lee el archivo index.js"):
+        intent = _classify_agent_request([], text)
+        assert intent["low_signal"] is False
+        assert "files" in intent["domains"]
+
+
 # ---------------------------------------------------------------------------
 # _detect_admin_intent
 # ---------------------------------------------------------------------------
@@ -139,6 +166,11 @@ class TestDetectAdminIntent:
 
     def test_general_question(self):
         assert _detect_admin_intent(self._msgs("what is the capital of France?")) is False
+
+    def test_spanish_todo_is_not_admin_keyword(self):
+        assert _detect_admin_intent(
+            self._msgs("lee todo completamente para hacer analisis")
+        ) is False
 
     # --- Edge cases ---
 

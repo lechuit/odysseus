@@ -68,6 +68,33 @@ def test_resolver_blocks_sensitive_inside_workspace(ws):
         _resolve_tool_path_in_workspace(ws, ".ssh/authorized_keys")
 
 
+def test_resolver_strips_duplicate_workspace_basename_when_target_exists(tmp_path):
+    workspace = tmp_path / "slideshare-downloader"
+    workspace.mkdir()
+    target = workspace / "index.js"
+    target.write_text("console.log('ok')", encoding="utf-8")
+
+    assert (
+        _resolve_tool_path_in_workspace(str(workspace), "slideshare-downloader/index.js")
+        == os.path.realpath(target)
+    )
+
+
+def test_resolver_keeps_real_nested_workspace_basename_path(tmp_path):
+    workspace = tmp_path / "slideshare-downloader"
+    nested = workspace / "slideshare-downloader"
+    nested.mkdir(parents=True)
+    root_target = workspace / "index.js"
+    nested_target = nested / "index.js"
+    root_target.write_text("root", encoding="utf-8")
+    nested_target.write_text("nested", encoding="utf-8")
+
+    assert (
+        _resolve_tool_path_in_workspace(str(workspace), "slideshare-downloader/index.js")
+        == os.path.realpath(nested_target)
+    )
+
+
 # ── the central binding: the safety net ─────────────────────────────────
 
 def test_active_binding_confines_shared_resolvers(ws):
@@ -167,18 +194,20 @@ async def test_binding_does_not_leak(ws, admin):
 
 
 # ── tool selection: an active workspace is the file-work signal ─────────
-# A vague ("low-signal") message like "look at the local project" matches no
+# A vague ("low-signal") message like "take a look" matches no
 # domain keywords, so retrieval is normally skipped. When a workspace is set it
 # must still surface the file tools, otherwise the agent says it has no file
 # access (the bug this guards against).
 
-def _sent_tool_names(monkeypatch, *, workspace):
+def _sent_tool_names(monkeypatch, *, workspace, message="take a look"):
     import asyncio
     import src.agent_loop as al
+    import src.tool_index as ti
 
     monkeypatch.setattr(al, "get_setting", lambda key, default=None: default, raising=False)
     monkeypatch.setattr(al, "get_mcp_manager", lambda: None, raising=False)
     monkeypatch.setattr(al, "estimate_tokens", lambda *a, **k: 10, raising=False)
+    monkeypatch.setattr(ti, "get_tool_index", lambda: None, raising=False)
     # Isolate the selection logic from owner gating (tested separately).
     monkeypatch.setattr(al, "blocked_tools_for_owner", lambda owner: set(), raising=False)
 
@@ -194,7 +223,7 @@ def _sent_tool_names(monkeypatch, *, workspace):
     async def _run():
         gen = al.stream_agent_loop(
             "https://api.openai.com/v1", "gpt-test",
-            [{"role": "user", "content": "look at the local project"}],
+            [{"role": "user", "content": message}],
             max_rounds=1, relevant_tools=None, owner="admin", workspace=workspace,
         )
         return [c async for c in gen]
@@ -221,6 +250,54 @@ def test_low_signal_without_workspace_excludes_file_tools(monkeypatch):
     names = _sent_tool_names(monkeypatch, workspace=None)
     assert "read_file" not in names
     assert "get_workspace" not in names
+
+
+def test_spanish_workspace_read_surfaces_readonly_file_tools(monkeypatch):
+    names = _sent_tool_names(
+        monkeypatch,
+        workspace="/tmp",
+        message="Si como te habia dicho lee todo completamente para hacer analisis",
+    )
+
+    assert {"read_file", "get_workspace", "grep", "glob", "ls"} <= names
+    assert "write_file" not in names
+    assert "edit_file" not in names
+    assert "bash" not in names
+    assert "python" not in names
+
+
+def test_spanish_workspace_fix_surfaces_edit_and_shell_tools(monkeypatch):
+    names = _sent_tool_names(
+        monkeypatch,
+        workspace="/tmp",
+        message="corrige el fallo en este proyecto",
+    )
+
+    assert {"read_file", "get_workspace", "grep", "glob", "ls"} <= names
+    assert {"edit_file", "write_file", "bash", "python"} <= names
+
+
+def test_workspace_prompt_includes_relative_path_guidance(monkeypatch, tmp_path):
+    import src.agent_loop as al
+
+    workspace = tmp_path / "slideshare-downloader"
+    workspace.mkdir()
+    monkeypatch.setattr(al, "get_setting", lambda key, default=None: default, raising=False)
+
+    messages, _ = al._build_system_prompt(
+        messages=[{"role": "user", "content": "lee index.js"}],
+        model="gpt-test",
+        active_document=None,
+        mcp_mgr=None,
+        relevant_tools={"get_workspace", "ls", "glob", "grep", "read_file"},
+        owner="admin",
+        workspace=str(workspace),
+    )
+
+    joined = "\n".join(str(m.get("content") or "") for m in messages)
+    assert f"Path: {os.path.realpath(workspace)}" in joined
+    assert "Relative paths resolve from this folder" in joined
+    assert "use `index.js`, not `slideshare-downloader/index.js`" in joined
 
 
 # ── browse route is admin-gated ─────────────────────────────────────────

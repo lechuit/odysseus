@@ -194,6 +194,18 @@ def _resolve_tool_path_in_workspace(workspace: str, raw_path: str) -> str:
     expanded = os.path.expanduser(str(raw_path).strip())
     candidate = expanded if os.path.isabs(expanded) else os.path.join(base, expanded)
     resolved = os.path.realpath(candidate)
+    if not os.path.isabs(expanded) and not os.path.exists(resolved):
+        norm_rel = os.path.normpath(expanded)
+        parts = pathlib.PurePath(norm_rel).parts
+        base_name = os.path.basename(base.rstrip(os.sep))
+        if (
+            len(parts) > 1
+            and os.path.normcase(parts[0]) == os.path.normcase(base_name)
+            and parts[0] not in (".", "..")
+        ):
+            stripped = os.path.realpath(os.path.join(base, *parts[1:]))
+            if os.path.exists(stripped):
+                resolved = stripped
     if _is_sensitive_path(resolved):
         raise ValueError(
             f"path '{raw_path}' is inside a sensitive directory "

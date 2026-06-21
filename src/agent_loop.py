@@ -9,6 +9,7 @@ The LLM decides when to use tools by writing fenced code blocks.
 import asyncio
 import collections
 import json
+import os
 import re
 import time
 import logging
@@ -682,7 +683,7 @@ _ADMIN_KEYWORDS = [
     # Without these, manage_documents never reaches the prompt and the
     # agent flails (curl, bash) instead of using the right tool.
     "document", "documents", "doc", "docs", "library", "tidy",
-    "note", "notes", "todo", "todos", "reminder", "reminders",
+    "note", "notes", "todo list", "to-do", "reminder", "reminders",
 ]
 
 def _detect_admin_intent(messages: List[Dict]) -> bool:
@@ -757,6 +758,79 @@ def _assistant_requested_followup(messages: List[Dict]) -> bool:
     return False
 
 
+_NOTES_CALENDAR_TASKS_RE = re.compile(
+    r"\b(?:note|notes|to-do|checklist|task list|remind me|reminder|buy|pickup|pick up)\b"
+    r"|\btodo\s+list\b"
+    r"|\b(?:add|create|make|set|write\s+down|jot)\s+(?:a\s+|an\s+)?todo\b"
+    r"|\b(?:nota|notas|tarea|tareas|lista\s+de\s+tareas|recordatorio|recordatorios|"
+    r"recu[eé]rdame|recuerdame|recu[eé]rdalo|recuerdalo|anota|apunta)\b"
+    r"|\b(?:agrega|agregar|a[nñ]ade|a[nñ]adir|crea|crear|pon|poner)\b.{0,80}"
+    r"\b(?:tarea|nota|recordatorio|lista\s+de\s+tareas)\b",
+    re.IGNORECASE,
+)
+_FILE_SUBJECT_RE = re.compile(
+    r"\b(?:file|files|folder|folders|directory|directories|repo|repository|repositories|"
+    r"git|grep|shell|terminal|bash|python|code|workspace|project|"
+    r"archivo|archivos|carpeta|carpetas|directorio|directorios|proyecto|"
+    r"repositorio|repositorios|c[oó]digo|codigo)\b"
+    r"|\b(?:read|edit)\s+file\b|\bfind\s+in\s+files\b",
+    re.IGNORECASE,
+)
+_FILE_ACTION_RE = re.compile(
+    r"\b(?:read|inspect|analy[sz]e|review|check|look\s+at|open|show|grep|find|"
+    r"edit|fix|correct|change|update|implement|write|run|"
+    r"lee|leer|analiza|analizar|revisa|revisar|inspecciona|inspeccionar|"
+    r"mira|mirar|abre|abrir|muestra|mostrar|busca|buscar|edita|editar|"
+    r"corrige|corregir|arregla|arreglar|cambia|cambiar|actualiza|actualizar|"
+    r"implementa|implementar|ejecuta|ejecutar)\b",
+    re.IGNORECASE,
+)
+_WORKSPACE_READ_SCOPE_RE = re.compile(
+    r"\b(?:file|files|folder|folders|project|repo|repository|code|workspace|"
+    r"everything|all|whole|complete|completely|"
+    r"archivo|archivos|carpeta|carpetas|proyecto|repositorio|repositorios|"
+    r"c[oó]digo|codigo|todo|entero|entera|completo|completa|completamente)\b",
+    re.IGNORECASE,
+)
+_WORKSPACE_WRITE_ACTION_RE = re.compile(
+    r"\b(?:fix|correct|edit|modify|implement|change|update|write|patch|debug|"
+    r"corrige|corregir|arregla|arreglar|edita|editar|modifica|modificar|"
+    r"implementa|implementar|cambia|cambiar|actualiza|actualizar|parcha|"
+    r"depura|depurar)\b",
+    re.IGNORECASE,
+)
+_WORKSPACE_WRITE_SCOPE_RE = re.compile(
+    r"\b(?:file|files|folder|folders|project|repo|repository|code|bug|error|issue|"
+    r"failure|problem|workspace|archivo|archivos|carpeta|carpetas|proyecto|"
+    r"repositorio|repositorios|c[oó]digo|codigo|fallo|problema)\b",
+    re.IGNORECASE,
+)
+_WORKSPACE_READ_TOOLS = {"get_workspace", "ls", "glob", "grep", "read_file"}
+_WORKSPACE_WRITE_TOOLS = _WORKSPACE_READ_TOOLS | {"edit_file", "write_file", "bash", "python"}
+
+
+def _looks_like_notes_calendar_tasks(text: str) -> bool:
+    return bool(_NOTES_CALENDAR_TASKS_RE.search(str(text or "")))
+
+
+def _looks_like_files_request(text: str) -> bool:
+    q = str(text or "")
+    return bool(_FILE_SUBJECT_RE.search(q) and (_FILE_ACTION_RE.search(q) or _FILE_SUBJECT_RE.search(q)))
+
+
+def _looks_like_workspace_read_request(text: str) -> bool:
+    q = str(text or "")
+    return bool(
+        _looks_like_files_request(q)
+        or (_FILE_ACTION_RE.search(q) and _WORKSPACE_READ_SCOPE_RE.search(q))
+    )
+
+
+def _looks_like_workspace_write_request(text: str) -> bool:
+    q = str(text or "")
+    return bool(_WORKSPACE_WRITE_ACTION_RE.search(q) and _WORKSPACE_WRITE_SCOPE_RE.search(q))
+
+
 def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, object]:
     """Classify only whether this turn deserves domain tool retrieval.
 
@@ -787,7 +861,7 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("cookbook")
     if has(r"\b(emails?|mails?|gmail|inbox|reply|forward|cc|bcc|send email|compose email|draft email|message chris|message him|message her)\b"):
         domains.add("email")
-    if has(r"\b(note|todo|to-do|checklist|task list|remind me|reminder|buy|pickup|pick up)\b"):
+    if _looks_like_notes_calendar_tasks(q):
         domains.add("notes_calendar_tasks")
     if has(r"\b(every day|every morning|every evening|recurring|automatically|cron|scheduled task|background task)\b"):
         domains.add("notes_calendar_tasks")
@@ -803,6 +877,8 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         r"\b(wyszukaj|wyszukać|wyszukac)\b.*\b(internet|internecie|online|web)\b",
         r"\b(sprawd[zź]|znajd[zź])\b.*\b(internet|internecie|online|web)\b",
         r"\b(aktualn\w*|bieżąc\w*|biezac\w*|dzisiaj|teraz)\b.*\b(pogod\w*|temperatur\w*)\b",
+        r"\b(?:busca|buscar|búscame|buscame|consulta|consultar)\b.*\b(?:internet|web|online|google)\b",
+        r"\b(?:últim\w*|ultim\w*|actual(?:es)?|noticias|clima|pron[oó]stico|precio)\b",
     ):
         domains.add("web")
     if has(r"\b(research|deep dive|investigate|look into)\b"):
@@ -811,7 +887,7 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
         domains.add("ui")
     if has(r"\b(session|chat history|rename chat|delete chat|archive chat|fork chat|list chats)\b"):
         domains.add("sessions")
-    if has(r"\b(file|folder|directory|repo|git|grep|find in files|read file|edit file|shell|terminal|bash|python)\b"):
+    if _looks_like_files_request(q):
         domains.add("files")
     if has(r"\b(endpoint|api token|mcp|webhook|preference|configure|config|setting)\b"):
         domains.add("settings")
@@ -866,6 +942,7 @@ def _build_system_prompt(
     owner: Optional[str] = None,
     suppress_local_context: bool = False,
     active_email: Optional[Dict[str, str]] = None,
+    workspace: Optional[str] = None,
 ) -> List[Dict]:
     """Build agent system prompt, inject MCP/document context, merge consecutive system msgs."""
     global _cached_base_prompt, _cached_base_prompt_key
@@ -933,6 +1010,24 @@ def _build_system_prompt(
         _datetime_message = current_datetime_context_message()
     except Exception:
         pass
+    _workspace_message = None
+    if workspace and not suppress_local_context:
+        try:
+            _ws_path = os.path.realpath(str(workspace))
+            _ws_base = os.path.basename(_ws_path.rstrip(os.sep)) or _ws_path
+            _workspace_message = {
+                "role": "system",
+                "content": (
+                    "ACTIVE WORKSPACE\n"
+                    f"Path: {_ws_path}\n"
+                    "File tools are confined to this folder. Relative paths resolve from this folder.\n"
+                    f"If the workspace folder is named `{_ws_base}`, do not prefix relative paths "
+                    f"with `{_ws_base}/`; use `index.js`, not `{_ws_base}/index.js`."
+                ),
+                "_protected": True,
+            }
+        except Exception:
+            _workspace_message = None
 
     # Document context is kept as a SEPARATE message (not merged into the tool
     # prompt) so the context trimmer doesn't destroy it when truncating the
@@ -1322,6 +1417,9 @@ def _build_system_prompt(
         if merged[i].get("role") == "user":
             last_user_idx = i
             break
+    if _workspace_message:
+        merged.insert(last_user_idx, _workspace_message)
+        last_user_idx += 1
     if _doc_message:
         merged.insert(last_user_idx, _doc_message)
         last_user_idx += 1  # the document message is now at last_user_idx
@@ -2016,6 +2114,16 @@ async def stream_agent_loop(
     if not guide_only and _relevant_tools is not None:
         for _domain in (_intent.get("domains") or set()):
             _relevant_tools.update(_DOMAIN_TOOL_MAP.get(str(_domain), set()))
+        if workspace:
+            if _looks_like_workspace_write_request(_retrieval_query):
+                _relevant_tools.update(_WORKSPACE_WRITE_TOOLS)
+                logger.info("[tool-rag] Workspace write/edit intent; including file edit and shell tools")
+            elif (
+                _looks_like_workspace_read_request(_retrieval_query)
+                or "files" in (_intent.get("domains") or set())
+            ):
+                _relevant_tools.update(_WORKSPACE_READ_TOOLS)
+                logger.info("[tool-rag] Workspace read/analyze intent; including read-only file tools")
         if "cookbook" in (_intent.get("domains") or set()):
             _relevant_tools.update({
                 "list_served_models",
@@ -2159,6 +2267,7 @@ async def stream_agent_loop(
         owner=owner,
         suppress_local_context=guide_only,
         active_email=active_email,
+        workspace=workspace,
     )
     if plan_mode and not guide_only:
         # Steer the model to investigate-then-propose. Hard tool gating handles
@@ -2301,14 +2410,17 @@ async def stream_agent_loop(
     # that maps to an available tool, so harmless transitional text such as
     # "let me know what you think" / "voy a explicarlo" is not nudged.
     _INTENT_RE = re.compile(
-        r"(?:^|\n)\s*(?:let me|i'?ll|i will|i need to|we need to|need to|"
+        r"(?:^|\n)\s*(?:[*_>`#-]+\s*)?(?:let me|i'?ll|i will|i need to|we need to|need to|"
         r"i should|we should|i must|we must|going to|let's|"
         r"voy a|vamos a|necesito|necesitamos|debo|debemos|tengo que|"
-        r"tenemos que|déjame|dejame|permíteme|permiteme)\s+"
+        r"tenemos que|déjame|dejame|permíteme|permiteme|"
+        r"intentar[eé]|reintentar[eé]|tratar[eé]\s+de)\s+"
         r"(?:tail|check|investigate|look at|see|read|fetch|inspect|"
         r"verify|diagnose|examine|debug|capture|grab|pull|view|run|call|"
         r"trigger|launch|start|kick off|stop|kill|restart|adopt|serve|"
         r"register|list|search|find|query|hit|ping|test|use|perform|do|"
+        r"proceed|proceder|reintentarlo|intentarlo|hacerlo|leerlo|revisarlo|"
+        r"analizarlo|inspeccionarlo|buscarlo|abrirlo|ejecutarlo|usarlo|"
         r"reintentar|intentar|comprobar|revisar|investigar|mirar|ver|leer|"
         r"obtener|inspeccionar|verificar|diagnosticar|examinar|depurar|"
         r"capturar|descargar|consultar|ejecutar|llamar|activar|iniciar|"

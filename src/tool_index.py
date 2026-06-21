@@ -348,7 +348,10 @@ class ToolIndex:
             {"list_email_accounts", "list_emails", "read_email", "send_email", "reply_to_email", "bulk_email", "delete_email", "archive_email", "mark_email_read", "resolve_contact", "ui_control"},
         frozenset({"calendar", "event", "meeting", "schedule", "appointment"}):
             {"manage_calendar"},
-        frozenset({"note", "todo", "reminder", "remind", "checklist", "remember to"}):
+        frozenset({"note", "notes", "todo list", "to-do", "reminder", "remind", "checklist",
+                   "remember to", "nota", "notas", "tarea", "tareas",
+                   "lista de tareas", "recordatorio", "recordatorios",
+                   "recuérdame", "recuerdame"}):
             {"manage_notes"},
         # Chat/session management. "rename" alone maps to documents below, so a
         # request like "rename the last 12 sessions/chats" needs these session
@@ -398,12 +401,20 @@ class ToolIndex:
         # Deep research intent (incl. common typo "reserach")
         frozenset({"web search", "search the web", "search online", "look up",
                    "google", "latest", "current", "news", "weather",
-                   "forecast", "stock price", "price of"}):
+                   "forecast", "stock price", "price of", "busca en internet",
+                   "buscar en internet", "consulta en internet", "noticias",
+                   "clima", "pronóstico", "pronostico", "precio de"}):
             {"web_search", "web_fetch"},
         frozenset({"research", "reserach", "reasearch", "look into", "investigate",
                    "deep dive", "deep research", "find out about", "study up on",
                    "report on", "do research", "look up everything"}):
             {"trigger_research"},
+        frozenset({"file", "files", "folder", "directory", "repo", "repository",
+                   "project files", "read file", "edit file", "find in files",
+                   "archivo", "archivos", "carpeta", "directorio", "proyecto",
+                   "repositorio", "codigo", "código", "workspace",
+                   "lee el archivo", "analiza el proyecto", "revisa la carpeta"}):
+            {"get_workspace", "ls", "glob", "grep", "read_file"},
         # Settings-change intent — "change my…/set my…/use X for…/turn on…".
         frozenset({"change my", "set my", "use the voice", "change the voice",
                    "my voice", "tts voice", "search engine", "default model",
