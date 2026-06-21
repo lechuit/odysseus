@@ -979,6 +979,10 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             "hard max": "agent_input_token_hard_max",
             "token budget cap": "agent_input_token_hard_max",
             "input budget cap": "agent_input_token_hard_max",
+            "operation permissions": "operation_permissions_enabled",
+            "operation permission rules": "operation_permission_rules",
+            "tool permissions": "operation_permission_rules",
+            "sandbox": "operation_permissions_sandbox",
         }
         def _resolve(k):
             k2 = (k or "").strip().lower()
@@ -1107,6 +1111,84 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             s[key] = DEFAULT_SETTINGS[key]
             save_settings(s)
             return {"response": f"Reset {key} to default ({DEFAULT_SETTINGS[key]}).", "exit_code": 0}
+
+        elif action in (
+            "add_permission_rule",
+            "delete_permission_rule",
+            "list_permission_rules",
+            "clear_permission_rules",
+            "permission_metrics",
+        ):
+            from src.operation_permissions import (
+                add_persistent_rule,
+                clear_persistent_rules,
+                delete_persistent_rule,
+                get_persistent_rules,
+                metrics_snapshot,
+            )
+
+            if action == "list_permission_rules":
+                rules = get_persistent_rules()
+                return {
+                    "response": (
+                        "No operation permission rules are configured."
+                        if not rules
+                        else "\n".join(
+                            f"{r.get('id')}: {r.get('behavior')} {r.get('tool')} "
+                            f"{r.get('match')} {r.get('pattern') or '*'}"
+                            for r in rules
+                        )
+                    ),
+                    "rules": rules,
+                    "exit_code": 0,
+                }
+
+            if action == "permission_metrics":
+                metrics = metrics_snapshot()
+                return {
+                    "response": ", ".join(f"{k}={v}" for k, v in sorted(metrics.items())),
+                    "metrics": metrics,
+                    "exit_code": 0,
+                }
+
+            if action == "clear_permission_rules":
+                count = clear_persistent_rules()
+                return {
+                    "response": f"Cleared {count} operation permission rule(s).",
+                    "cleared": count,
+                    "exit_code": 0,
+                }
+
+            if action == "delete_permission_rule":
+                rule_id = str(args.get("id") or args.get("rule_id") or "").strip()
+                if not rule_id:
+                    return {"error": "id/rule_id is required", "exit_code": 1}
+                deleted = delete_persistent_rule(rule_id)
+                return {
+                    "response": f"Deleted permission rule {rule_id}." if deleted else f"No permission rule found with id {rule_id}.",
+                    "deleted": deleted,
+                    "exit_code": 0 if deleted else 1,
+                }
+
+            rule = {
+                "behavior": args.get("behavior"),
+                "tool": args.get("tool") or args.get("name"),
+                "match": args.get("match") or args.get("matcher"),
+                "pattern": args.get("pattern") or args.get("rule") or args.get("ruleContent"),
+                "description": args.get("description") or args.get("reason") or "",
+            }
+            try:
+                added = add_persistent_rule(rule)
+            except ValueError as exc:
+                return {"error": f"Invalid permission rule: {exc}", "exit_code": 1}
+            return {
+                "response": (
+                    f"Added permission rule {added['id']}: "
+                    f"{added['behavior']} {added['tool']} {added['match']} {added.get('pattern') or '*'}."
+                ),
+                "rule": added,
+                "exit_code": 0,
+            }
 
         elif action in ("disable_tool", "enable_tool", "list_tools"):
             # Tool-toggle actions. These edit settings.json:disabled_tools

@@ -127,6 +127,23 @@ DEFAULT_SETTINGS = {
     # `compute_input_token_budget`.
     "agent_input_token_hard_max": 200_000,
     "agent_stream_timeout_seconds": 300,
+    # Operation-level permissions for local tools. These sit below the existing
+    # deployment/user gates: admin/public/disabled/plan checks still run first.
+    "operation_permissions_enabled": True,
+    "operation_permissions_builtin_policy": True,
+    "operation_permissions_interactive_ask": True,
+    "operation_permissions_ask_ambiguous_bash": False,
+    "operation_permission_rules": [],
+    "operation_permissions_sandbox": {
+        "enabled": False,
+        "fail_if_unavailable": False,
+        "network": {"deny": False},
+        "filesystem": {
+            "allow_read": [],
+            "allow_write": [],
+            "deny": [],
+        },
+    },
     # Extra directory roots that read_file / write_file may access, in
     # addition to the built-in project data/ and system temp dirs. Each
     # entry is an absolute path. Sensitive subpaths (.ssh, .gnupg, shell

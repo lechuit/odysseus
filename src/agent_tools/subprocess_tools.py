@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import time
 import collections
@@ -103,51 +104,95 @@ async def _run_subprocess_streaming(
 class BashTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import agent_cwd, _truncate
+        from src.operation_permissions import record_sandbox_run
+        from src.sandbox_runner import build_sandbox_plan, fail_if_unavailable, sandbox_enabled
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
-        proc = await asyncio.create_subprocess_shell(
-            content,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_subproc_env,
-            cwd=agent_cwd(),
-        )
-        stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
-            proc,
-            timeout=DEFAULT_BASH_TIMEOUT,
-            progress_cb=progress_cb,
-        )
+        cwd = agent_cwd()
+        plan = build_sandbox_plan(("/bin/sh", "-c", content), cwd=cwd)
+        record_sandbox_run(sandboxed=plan.sandboxed)
+        if sandbox_enabled() and fail_if_unavailable() and not plan.sandboxed:
+            return {"error": f"bash: sandbox unavailable: {plan.reason}", "exit_code": 126}
+        profile_path = plan.reason if plan.backend == "sandbox-exec" else ""
+        try:
+            if plan.enabled:
+                proc = await asyncio.create_subprocess_exec(
+                    *plan.command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=_subproc_env,
+                    cwd=cwd,
+                )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    content,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=_subproc_env,
+                    cwd=cwd,
+                )
+            stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
+                proc,
+                timeout=DEFAULT_BASH_TIMEOUT,
+                progress_cb=progress_cb,
+            )
+        finally:
+            if profile_path:
+                try:
+                    os.unlink(profile_path)
+                except OSError:
+                    pass
         if timed_out:
             return {"error": f"bash: timed out after {DEFAULT_BASH_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
         output = stdout.rstrip()
         err = stderr.rstrip()
+        if plan.enabled and not plan.sandboxed and plan.reason:
+            err = (err + "\n" if err else "") + f"[sandbox] {plan.reason}"
         if err:
             output = (output + "\nSTDERR: " + err).strip() if output else "STDERR: " + err
         output = _truncate(output, MAX_OUTPUT_CHARS)
-        return {"output": output or "(no output)", "exit_code": rc or 0}
+        return {"output": output or "(no output)", "exit_code": rc or 0, "sandboxed": plan.sandboxed, "sandbox_backend": plan.backend}
 
 class PythonTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import agent_cwd, _truncate
+        from src.operation_permissions import record_sandbox_run
+        from src.sandbox_runner import build_sandbox_plan, fail_if_unavailable, sandbox_enabled
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
-        proc = await asyncio.create_subprocess_exec(
-            (sys.executable or "python"), "-I", "-c", content,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_subproc_env,
-            cwd=agent_cwd(),
-        )
-        stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
-            proc,
-            timeout=DEFAULT_PYTHON_TIMEOUT,
-            progress_cb=progress_cb,
-        )
+        cwd = agent_cwd()
+        command = ((sys.executable or "python"), "-I", "-c", content)
+        plan = build_sandbox_plan(command, cwd=cwd)
+        record_sandbox_run(sandboxed=plan.sandboxed)
+        if sandbox_enabled() and fail_if_unavailable() and not plan.sandboxed:
+            return {"error": f"python: sandbox unavailable: {plan.reason}", "exit_code": 126}
+        profile_path = plan.reason if plan.backend == "sandbox-exec" else ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *plan.command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_subproc_env,
+                cwd=cwd,
+            )
+            stdout, stderr, rc, timed_out = await _run_subprocess_streaming(
+                proc,
+                timeout=DEFAULT_PYTHON_TIMEOUT,
+                progress_cb=progress_cb,
+            )
+        finally:
+            if profile_path:
+                try:
+                    os.unlink(profile_path)
+                except OSError:
+                    pass
         if timed_out:
             return {"error": f"python: timed out after {DEFAULT_PYTHON_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
         output = stdout.rstrip()
         err = stderr.rstrip()
+        if plan.enabled and not plan.sandboxed and plan.reason:
+            err = (err + "\n" if err else "") + f"[sandbox] {plan.reason}"
         if err:
             output = (output + "\nSTDERR: " + err).strip() if output else "STDERR: " + err
         output = _truncate(output, MAX_OUTPUT_CHARS)
-        return {"output": output or "(no output)", "exit_code": rc or 0}
+        return {"output": output or "(no output)", "exit_code": rc or 0, "sandboxed": plan.sandboxed, "sandbox_backend": plan.backend}

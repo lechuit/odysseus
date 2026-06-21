@@ -631,6 +631,48 @@ async def _execute_tool_block_impl(
         logger.warning("Public tool policy blocked owner=%r tool=%s", owner, tool)
         return desc, result
 
+    # Operation-level permissions sit below deployment/user gates and above the
+    # concrete tool implementation. They can deny/ask for a specific bash
+    # command, file path, web_fetch domain, or MCP tool while leaving the tool
+    # itself enabled.
+    if tool not in {"ask_user", "update_plan"}:
+        try:
+            from src.operation_permissions import ask_result, deny_result, evaluate_tool_permission
+
+            permission_decision = evaluate_tool_permission(
+                tool,
+                content,
+                session_id=session_id,
+                owner=owner,
+            )
+            if permission_decision.behavior == "deny":
+                desc = f"{tool}: BLOCKED"
+                result = deny_result(permission_decision)
+                logger.warning(
+                    "Operation permission denied tool=%s source=%s reason=%s",
+                    tool,
+                    permission_decision.source,
+                    permission_decision.reason,
+                )
+                return desc, result
+            if permission_decision.behavior == "ask":
+                desc = f"{tool}: permission required"
+                result = ask_result(permission_decision, session_id=session_id)
+                logger.info(
+                    "Operation permission requires approval tool=%s source=%s reason=%s",
+                    tool,
+                    permission_decision.source,
+                    permission_decision.reason,
+                )
+                return desc, result
+        except Exception as exc:
+            logger.exception("Operation permission check failed for tool=%s: %s", tool, exc)
+            return f"{tool}: BLOCKED", {
+                "error": f"Operation permission check failed: {exc}",
+                "exit_code": 1,
+                "blocked": True,
+            }
+
     # ask_user: the agent poses a multiple-choice question to the user to get a
     # decision/clarification. This is a pure UI-control marker — no subprocess,
     # no filesystem. It returns an `ask_user` payload that the agent loop turns

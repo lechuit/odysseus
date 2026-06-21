@@ -633,6 +633,25 @@ def setup_chat_routes(
         # Ensure session has auth headers
         resolve_session_auth(sess, session, owner=get_current_user(request))
 
+        permission_context_note = ""
+        try:
+            from src.operation_permissions import consume_pending_permission_response
+
+            _perm_response = consume_pending_permission_response(
+                session,
+                message,
+                owner=owner,
+            )
+            if _perm_response:
+                permission_context_note = (
+                    "Operation permission decision recorded by the user: "
+                    f"{_perm_response.get('message', '')}. "
+                    "If the denied/approved operation is still needed, continue accordingly."
+                )
+                logger.info("[operation-permissions] %s", permission_context_note)
+        except Exception as _perm_exc:
+            logger.warning("Failed to consume pending operation permission: %s", _perm_exc)
+
         # Check for research_pending BEFORE mode persist overwrites it
         do_research = str(use_research).lower() == "true"
         if not do_research:
@@ -677,6 +696,8 @@ def setup_chat_routes(
             agent_mode=(chat_mode == "agent"),
             allow_tool_preprocessing=allow_tool_preprocessing,
         )
+        if permission_context_note:
+            ctx.messages.insert(len(ctx.preface), {"role": "system", "content": permission_context_note})
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
 

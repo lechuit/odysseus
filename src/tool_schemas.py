@@ -768,14 +768,19 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "manage_settings",
-            "description": "Manage user preferences and settings. Use `disable_tool`/`enable_tool`/`list_tools` to turn individual tools on or off globally (e.g. shell, search, browser, documents, memory, skills, images, tasks, notes, calendar, email). Use list/get/set/delete for free-form preferences.",
+            "description": "Manage user preferences and settings. Use `disable_tool`/`enable_tool`/`list_tools` to turn individual tools on or off globally. Also manages operation-level permission rules with list_permission_rules/add_permission_rule/delete_permission_rule/clear_permission_rules/permission_metrics.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools"]},
+                    "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools", "list_permission_rules", "add_permission_rule", "delete_permission_rule", "clear_permission_rules", "permission_metrics"]},
                     "key": {"type": "string", "description": "Setting key (for get/set/delete)"},
                     "value": {"description": "Setting value (for set) — can be string, number, boolean, or object"},
-                    "tool": {"type": "string", "description": "Tool name to disable/enable (for disable_tool/enable_tool). Accepts aliases: shell, search, browser, documents, memory, skills, images, tasks, notes, calendar, email — or a raw tool name like 'bash' or 'web_search'."}
+                    "tool": {"type": "string", "description": "Tool name to disable/enable or permission-rule tool name (e.g. bash, edit_file, web_fetch, mcp__server__tool)."},
+                    "behavior": {"type": "string", "enum": ["allow", "deny", "ask"], "description": "Permission behavior for add_permission_rule."},
+                    "match": {"type": "string", "enum": ["tool", "exact", "prefix", "glob", "path", "domain", "mcp"], "description": "Matcher type for add_permission_rule."},
+                    "pattern": {"type": "string", "description": "Pattern for add_permission_rule, e.g. 'git push', '**/.env', 'docs.python.org'."},
+                    "id": {"type": "string", "description": "Rule id for delete_permission_rule."},
+                    "description": {"type": "string", "description": "Optional human-readable reason for add_permission_rule."}
                 },
                 "required": ["action"]
             }
