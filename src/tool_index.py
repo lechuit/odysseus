@@ -73,7 +73,7 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "web_fetch": "Fetch and read the text content of a specific URL/website the user names (e.g. 'check example.com', 'open this link'). Use when you have a concrete URL; for open-ended lookups use web_search instead.",
     "read_file": "Read a file from disk and return its contents. View source code, config files, logs. Supports an optional line range (offset/limit) for large files.",
     "grep": "Search file CONTENTS for a regex across a directory tree (ripgrep-backed, honours .gitignore). Returns file:line:match. Use to find where code/symbols/strings live — prefer over bash grep.",
-    "glob": "Find FILES by glob pattern (e.g. '**/*.py'), newest first. Use to locate files by name/extension — prefer over bash find/ls.",
+    "glob": "Find FILES by literal name or glob pattern, newest first. When the user names Desktop/Downloads/Documents or another folder, pass that exact path and try the literal filename before a recursive pattern. Prefer over bash find/ls.",
     "ls": "List a directory's entries (folders then files with sizes). Use to see what's in a folder — prefer over bash ls.",
     "get_workspace": "Return the absolute path of the active workspace folder the user is working in. File tools are confined to it; the shell starts there but is not sandboxed. Call this first when the user refers to 'the project'/'the code'/'this folder' without giving a path, instead of asking them.",
     "write_file": "Write/create or fully rewrite a file ON DISK (source code, configs, project files). Use for new files or full rewrites — NOT create_document (editor panel) and NOT a bash heredoc.",

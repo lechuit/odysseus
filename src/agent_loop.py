@@ -256,6 +256,7 @@ _DOMAIN_RULES = {
 ## File rules
 - Use file tools for real disk files. Use document tools only for editor documents.
 - Prefer `grep`, `glob`, and `ls` over shell equivalents when available.
+- When the user names a folder (for example Desktop, Downloads, or Documents), search that folder first. For an exact filename use a literal `glob` pattern with that folder as `path`; do not start with `**` from the workspace root. Broaden only when the scoped lookup has no result.
 - Use `edit_file`/`write_file` for writes; avoid shell redirection/heredocs for editing files.""",
     "settings": """\
 ## Settings/API rules

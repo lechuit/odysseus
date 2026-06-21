@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import difflib
 import fnmatch
 import shutil
@@ -11,10 +12,46 @@ from src.constants import MAX_READ_CHARS, MAX_DIFF_LINES, MAX_OUTPUT_CHARS
 _CODENAV_SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "__pycache__",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
-    ".next", ".cache", "site-packages", ".idea", ".tox",
+    ".next", ".cache", "site-packages", ".idea", ".tox", ".Trash",
 })
 _CODENAV_MAX_HITS = 200
 _CODENAV_MAX_LINE = 400
+
+
+def _glob_to_regex(pattern: str) -> "re.Pattern":
+    """Translate a forward-slash glob into a regex.
+
+    ``*`` stays within one path segment while ``**`` can cross directories.
+    ``**/`` also matches zero directories, so ``**/report.xlsx`` finds a file
+    placed directly in the selected root.
+    """
+    i, n, out = 0, len(pattern), []
+    while i < n:
+        if pattern[i : i + 3] == "**/":
+            out.append("(?:[^/]+/)*")
+            i += 3
+        elif pattern[i : i + 2] == "**":
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _literal_glob_name(pattern: str) -> Optional[str]:
+    """Return an exact basename for literal and ``**/literal`` patterns."""
+    candidate = pattern[3:] if pattern.startswith("**/") else pattern
+    if "/" in candidate or any(char in candidate for char in "*?["):
+        return None
+    return candidate or None
+
 
 def _unified_diff(old: str, new: str, path: str) -> Optional[Dict[str, Any]]:
     if old == new:
@@ -254,40 +291,92 @@ class GlobTool:
         if not pattern:
             return {"error": "glob: pattern is required", "exit_code": 1}
         try:
+            max_hits = int(args.get("max_results") or _CODENAV_MAX_HITS)
+        except (TypeError, ValueError):
+            max_hits = _CODENAV_MAX_HITS
+        max_hits = max(1, min(max_hits, _CODENAV_MAX_HITS))
+        try:
             root = _resolve_search_root(str(args.get("path", "")))
         except ValueError as e:
             return {"error": f"glob: {e}", "exit_code": 1}
 
         def _glob():
-            from pathlib import Path
-            base = Path(root)
-            if not base.is_dir():
-                return None, f"glob: {root}: not a directory"
-            matched = []
-            try:
-                for p in base.rglob(pattern):
-                    if set(p.relative_to(base).parts) & _CODENAV_SKIP_DIRS:
-                        continue
-                    try:
-                        mtime = p.stat().st_mtime
-                    except OSError:
-                        mtime = 0
-                    matched.append((mtime, str(p)))
-                    if len(matched) > _CODENAV_MAX_HITS * 5:
-                        break
-            except (OSError, ValueError) as _e:
-                return None, f"glob: {_e}"
-            matched.sort(key=lambda t: t[0], reverse=True)
-            return [pth for _, pth in matched[:_CODENAV_MAX_HITS]], None
+            base = os.path.abspath(root)
+            if not os.path.isdir(base):
+                return None, f"glob: {root}: not a directory", 0
+            norm_pattern = pattern.replace("\\", "/")
 
-        paths, err = await asyncio.to_thread(_glob)
+            # Exact paths are common when the user already supplied a folder.
+            # Resolve them without recursively walking the directory tree.
+            if not any(char in norm_pattern for char in "*?["):
+                candidate = os.path.normpath(os.path.join(base, norm_pattern))
+                if os.path.exists(candidate):
+                    return [candidate], None, 0
+
+            # A model may still emit **/name after the user says Desktop. Check
+            # the conventional document folders before traversing a whole home
+            # workspace (and its enormous macOS Library tree).
+            literal_name = _literal_glob_name(norm_pattern)
+            if literal_name:
+                likely_hits = []
+                for folder in ("Desktop", "Documents", "Downloads"):
+                    candidate = os.path.join(base, folder, literal_name)
+                    if os.path.exists(candidate):
+                        try:
+                            mtime = os.stat(candidate).st_mtime
+                        except OSError:
+                            mtime = 0
+                        likely_hits.append((mtime, candidate))
+                if likely_hits:
+                    likely_hits.sort(key=lambda item: item[0], reverse=True)
+                    return [path for _, path in likely_hits[:max_hits]], None, 0
+
+            regex = _glob_to_regex(norm_pattern)
+            matched = []
+            walk_errors = []
+            home = os.path.realpath(os.path.expanduser("~"))
+            scan_cap = max_hits if literal_name else max_hits * 5
+
+            def _onerror(exc):
+                walk_errors.append(exc)
+
+            try:
+                for directory, dirnames, filenames in os.walk(base, onerror=_onerror):
+                    dirnames[:] = [name for name in dirnames if name not in _CODENAV_SKIP_DIRS]
+                    if os.path.realpath(base) == home and os.path.realpath(directory) == home:
+                        dirnames[:] = [name for name in dirnames if name != "Library"]
+                    for name in filenames + dirnames:
+                        full_path = os.path.join(directory, name)
+                        relative = os.path.relpath(full_path, base).replace(os.sep, "/")
+                        if not (regex.fullmatch(relative) or regex.fullmatch(name)):
+                            continue
+                        try:
+                            mtime = os.stat(full_path).st_mtime
+                        except OSError:
+                            mtime = 0
+                        matched.append((mtime, full_path))
+                    if len(matched) >= scan_cap:
+                        break
+            except OSError as exc:
+                # Keep matches found before a transient filesystem interruption
+                # instead of discarding useful partial results.
+                walk_errors.append(exc)
+            matched.sort(key=lambda t: t[0], reverse=True)
+            return [path for _, path in matched[:max_hits]], None, len(walk_errors)
+
+        paths, err, skipped = await asyncio.to_thread(_glob)
         if err:
             return {"error": err, "exit_code": 1}
         if not paths:
-            return {"output": f"No files matching {pattern!r} under {root}", "exit_code": 0}
+            out = f"No files matching {pattern!r} under {root}"
+            if skipped:
+                out += f"\n[Skipped {skipped} inaccessible or interrupted director{'y' if skipped == 1 else 'ies'}.]"
+            return {"output": out, "exit_code": 0}
         out = "\n".join(paths)
-        if len(paths) >= _CODENAV_MAX_HITS:
-            out += f"\n... [capped at {_CODENAV_MAX_HITS} files]"
+        if len(paths) >= max_hits:
+            out += f"\n... [capped at {max_hits} files]"
+        if skipped:
+            out += f"\n[Partial search: skipped {skipped} inaccessible or interrupted director{'y' if skipped == 1 else 'ies'}.]"
         return {"output": _truncate(out), "exit_code": 0}
 
 class GrepTool:

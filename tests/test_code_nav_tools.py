@@ -107,6 +107,48 @@ def test_glob_requires_pattern(repo):
     assert r["exit_code"] == 1
 
 
+def test_glob_exact_path_avoids_recursive_walk(repo, monkeypatch):
+    target = os.path.join(repo, "known.xlsx")
+    with open(target, "wb") as f:
+        f.write(b"xlsx")
+
+    def unexpected_walk(*_args, **_kwargs):
+        raise AssertionError("literal lookup should not walk the tree")
+
+    monkeypatch.setattr(os, "walk", unexpected_walk)
+    r = _run("glob", f'{{"pattern": "known.xlsx", "path": "{repo}"}}')
+    assert r["exit_code"] == 0
+    assert target in r["output"]
+
+
+def test_glob_checks_common_user_folders_before_recursive_walk(repo, monkeypatch):
+    desktop = os.path.join(repo, "Desktop")
+    os.mkdir(desktop)
+    target = os.path.join(desktop, "transactions.xlsx")
+    with open(target, "wb") as f:
+        f.write(b"xlsx")
+
+    def unexpected_walk(*_args, **_kwargs):
+        raise AssertionError("common-folder fast path should avoid a home-wide walk")
+
+    monkeypatch.setattr(os, "walk", unexpected_walk)
+    r = _run("glob", f'{{"pattern": "**/transactions.xlsx", "path": "{repo}", "max_results": 1}}')
+    assert r["exit_code"] == 0
+    assert target in r["output"]
+
+
+def test_glob_keeps_partial_results_after_interrupted_walk(repo, monkeypatch):
+    def interrupted_walk(base, onerror=None):
+        yield base, [], ["a.py"]
+        raise InterruptedError(4, "Interrupted system call")
+
+    monkeypatch.setattr(os, "walk", interrupted_walk)
+    r = _run("glob", f'{{"pattern": "*.py", "path": "{repo}"}}')
+    assert r["exit_code"] == 0
+    assert "a.py" in r["output"]
+    assert "Partial search" in r["output"]
+
+
 # ── ls ────────────────────────────────────────────────────────────────────
 
 def test_ls_lists_entries(repo):

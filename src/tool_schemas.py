@@ -116,12 +116,13 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "glob",
-            "description": "Find files by glob pattern (recursive), newest first. e.g. '**/*.py'. PREFER this over `bash find/ls` for locating files — confined to the allowed roots.",
+            "description": "Find files by glob pattern, newest first. If the user names a folder such as Desktop, Downloads, or Documents, pass it as `path` and use a literal filename when known; only broaden recursively if that scoped lookup returns no result. PREFER this over `bash find/ls` — confined to the allowed roots.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.ts' or 'src/**/test_*.py'"},
-                    "path": {"type": "string", "description": "Base directory (optional; defaults to the project root)"}
+                    "pattern": {"type": "string", "description": "Literal filename or glob pattern, e.g. 'report.xlsx', '**/*.ts', or 'src/**/test_*.py'"},
+                    "path": {"type": "string", "description": "Base directory (optional; defaults to the project root). Use the exact folder named by the user."},
+                    "max_results": {"type": "integer", "description": "Maximum paths to return (optional; use 1 for a unique exact filename)"}
                 },
                 "required": ["pattern"]
             }
