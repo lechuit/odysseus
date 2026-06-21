@@ -103,11 +103,44 @@ def test_microcompact_native_history_preserves_recent_error_plan_and_signatures(
         )
 
 
+def test_microcompact_native_history_only_clears_allowlisted_tools():
+    non_compactable_args = json.dumps({"uid": "email-1", "body_hint": "z" * 3000})
+    messages = [{"role": "system", "content": "You are Odysseus."}]
+    messages.extend(_native_pair(
+        0,
+        name="read_email",
+        result="important email body\n" + ("e" * 2600),
+        args=non_compactable_args,
+    ))
+    messages.extend(_native_pair(
+        1,
+        name="chat_with_model",
+        result="teacher/model answer\n" + ("m" * 2600),
+        args=json.dumps({"prompt": "z" * 3000}),
+    ))
+    for i in range(2, 11):
+        messages.extend(_native_pair(i, name="bash"))
+
+    compacted, stats = microcompact_tool_history(messages, input_budget=6000, reserve_tokens=0)
+
+    assert stats["passes"] == 1
+    assert "important email body" in "\n".join(str(m.get("content", "")) for m in compacted)
+    assert "teacher/model answer" in "\n".join(str(m.get("content", "")) for m in compacted)
+    assert compacted[1]["tool_calls"][0]["function"]["arguments"] == non_compactable_args
+    assert any(
+        m.get("role") == "tool"
+        and m.get("content") == MICROCOMPACT_CLEARED_MESSAGE
+        for m in compacted
+    )
+
+
 def test_microcompact_textual_tool_results_by_section_and_is_idempotent():
     def section(name, label):
         return f"### {name}\n{label}\n" + ("x" * 2400) + "\n\n"
 
     old_sections = [
+        section("read_email", "old-email"),
+        section("chat_with_model", "old-model"),
         section("bash", "old-0"),
         section("update_plan", "old-plan"),
         section("python", "ERROR: old failure"),
@@ -130,6 +163,8 @@ def test_microcompact_textual_tool_results_by_section_and_is_idempotent():
     text = compacted[1]["content"]
     assert "old-0" not in text
     assert "old-3" not in text
+    assert "old-email" in text
+    assert "old-model" in text
     assert text.count(MICROCOMPACT_CLEARED_MESSAGE) >= 2
     assert "old-plan" in text
     assert "ERROR: old failure" in text
@@ -141,4 +176,3 @@ def test_microcompact_textual_tool_results_by_section_and_is_idempotent():
     compacted_again, stats_again = microcompact_tool_history(compacted, input_budget=5000, reserve_tokens=0)
     assert compacted_again == compacted
     assert stats_again["passes"] == 0
-

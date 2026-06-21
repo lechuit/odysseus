@@ -49,6 +49,19 @@ MICROCOMPACT_CLEARED_MESSAGE = "[Old tool result content cleared to preserve con
 MICROCOMPACT_TRUNCATED_ARGS_KEY = "_microcompacted_for_context"
 _TOOL_RESULTS_PREFIX = "[Tool execution results]"
 _PROTECTED_MICROCOMPACT_TOOLS = {"update_plan", "ask_user"}
+MICROCOMPACT_COMPACTABLE_TOOLS = {
+    "bash",
+    "python",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "grep",
+    "glob",
+    "ls",
+    "get_workspace",
+    "web_search",
+    "web_fetch",
+}
 
 # Cursor-style self-summarization prompt — produces structured, dense summaries
 SELF_SUMMARY_SYSTEM_PROMPT = """You are summarizing a conversation to preserve context after compaction. Produce a structured summary that lets the conversation continue seamlessly.
@@ -208,6 +221,10 @@ def _normalize_tool_name(name: Any) -> str:
 
 def _is_microcompact_protected_tool(name: Any) -> bool:
     return _normalize_tool_name(name) in _PROTECTED_MICROCOMPACT_TOOLS
+
+
+def _is_microcompact_compactable_tool(name: Any) -> bool:
+    return _normalize_tool_name(name) in MICROCOMPACT_COMPACTABLE_TOOLS
 
 
 def _looks_like_tool_error(text: Any) -> bool:
@@ -379,6 +396,7 @@ def microcompact_tool_history(
         if c["batch"] != latest_batch
         and c["order"] not in keep_orders
         and not _is_microcompact_protected_tool(c.get("name", ""))
+        and _is_microcompact_compactable_tool(c.get("name", ""))
     ]
     if not eligible:
         return messages, stats
