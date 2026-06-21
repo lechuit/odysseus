@@ -727,6 +727,8 @@ _BASH_DANGEROUS_COMMANDS = {
     "chmod",
     "chown",
     "chgrp",
+    "eval",
+    "exec",
     "sudo",
     "su",
     "ssh",
@@ -813,6 +815,7 @@ _BASH_PATH_COMMANDS = {
 _BASH_WRITE_PATH_COMMANDS = {"cp", "ln", "mkdir", "mv", "rm", "rmdir", "tee", "touch"}
 _BASH_GLOB_CHARS = re.compile(r"[*?\[\]{}]")
 _BASH_COMMAND_SUBSTITUTION_RE = re.compile(r"(\$\(|\$\{|\$\[|`)")
+_BASH_PROCESS_SUBSTITUTION_RE = re.compile(r"(^|[^<>])(?:<|>)\(")
 _BASH_DEVICE_PATHS = {
     "/dev/null",
     "/dev/stdin",
@@ -1239,6 +1242,8 @@ def classify_bash_command(command: str) -> Tuple[str, str]:
         return "dangerous", "recursive forced removal of a root/home path"
     if _pipelines_into_shell(cmd):
         return "dangerous", "pipeline executes data with a shell interpreter"
+    if _BASH_COMMAND_SUBSTITUTION_RE.search(cmd) or _BASH_PROCESS_SUBSTITUTION_RE.search(cmd):
+        return "dangerous", "command uses dynamic shell expansion"
     if re.search(r"\bcurl\b.+\|\s*(?:sh|bash|zsh|fish|dash)\b", low) or re.search(r"\bwget\b.+\|\s*(?:sh|bash|zsh|fish|dash)\b", low):
         return "dangerous", "download-and-execute pipeline"
     if re.search(r"\bfind\b.*\s-(?:delete|exec|execdir|ok|okdir)\b", low):
