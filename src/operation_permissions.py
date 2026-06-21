@@ -386,6 +386,179 @@ def _tool_matches(rule_tool: str, op: Operation) -> bool:
     return False
 
 
+_SHELL_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
+_BASH_RULE_WRAPPER_COMMANDS = {"env", "nohup", "timeout", "nice", "stdbuf", "time"}
+
+
+def _shell_join(parts: List[str]) -> str:
+    try:
+        return shlex.join(parts)
+    except Exception:
+        return " ".join(shlex.quote(part) for part in parts)
+
+
+def _shell_parts(segment: str) -> List[str]:
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return []
+
+
+def _strip_leading_env_assignments(parts: List[str]) -> List[str]:
+    idx = 0
+    while idx < len(parts) and _SHELL_ENV_ASSIGNMENT_RE.match(parts[idx] or ""):
+        idx += 1
+    return parts[idx:]
+
+
+def _strip_env_wrapper(parts: List[str]) -> List[str]:
+    idx = 1
+    while idx < len(parts):
+        token = parts[idx]
+        if _SHELL_ENV_ASSIGNMENT_RE.match(token or ""):
+            idx += 1
+            continue
+        if token == "--":
+            idx += 1
+            continue
+        if token in {"-u", "--unset"} and idx + 1 < len(parts):
+            idx += 2
+            continue
+        if token.startswith("-"):
+            idx += 1
+            continue
+        break
+    return parts[idx:]
+
+
+def _strip_timeout_wrapper(parts: List[str]) -> List[str]:
+    idx = 1
+    while idx < len(parts) and parts[idx].startswith("-"):
+        option = parts[idx]
+        idx += 1
+        if option in {"-s", "--signal", "-k", "--kill-after"} and idx < len(parts):
+            idx += 1
+    if idx + 1 >= len(parts):
+        return parts
+    # timeout [options] DURATION COMMAND...
+    return parts[idx + 1 :]
+
+
+def _strip_nice_wrapper(parts: List[str]) -> List[str]:
+    idx = 1
+    if idx < len(parts):
+        token = parts[idx]
+        if token == "-n" and idx + 1 < len(parts):
+            idx += 2
+        elif re.match(r"^-\d+$", token or ""):
+            idx += 1
+    return parts[idx:] if idx < len(parts) else parts
+
+
+def _strip_stdbuf_wrapper(parts: List[str]) -> List[str]:
+    idx = 1
+    while idx < len(parts):
+        token = parts[idx]
+        if token == "--":
+            idx += 1
+            break
+        if token in {"-i", "-o", "-e"} and idx + 1 < len(parts):
+            idx += 2
+            continue
+        if re.match(r"^-[ioe].+", token or ""):
+            idx += 1
+            continue
+        if token.startswith("-"):
+            idx += 1
+            continue
+        break
+    return parts[idx:] if idx < len(parts) else parts
+
+
+def _strip_safe_shell_wrapper_once(parts: List[str]) -> List[str]:
+    if not parts:
+        return parts
+    base = os.path.basename(parts[0])
+    if base not in _BASH_RULE_WRAPPER_COMMANDS:
+        return parts
+    if base == "env":
+        stripped = _strip_env_wrapper(parts)
+    elif base == "timeout":
+        stripped = _strip_timeout_wrapper(parts)
+    elif base == "nice":
+        stripped = _strip_nice_wrapper(parts)
+    elif base == "stdbuf":
+        stripped = _strip_stdbuf_wrapper(parts)
+    elif base in {"nohup", "time"}:
+        stripped = parts[1:]
+    else:
+        stripped = parts
+    return stripped if stripped and stripped != parts else parts
+
+
+def _bash_rule_candidate_values(command: str, *, behavior: str) -> List[str]:
+    """Return command strings that deny/ask Bash rules should inspect.
+
+    `allow` rules intentionally keep the historical full-command matching
+    behavior.  Expanding allow rules to subcommands would make a narrow allow
+    such as "git status" unexpectedly authorize "git status && git push".
+    """
+
+    raw = (command or "").strip()
+    if not raw:
+        return []
+    if behavior == "allow":
+        return [raw]
+
+    candidates: List[str] = [raw]
+    segments = _split_shell_segments(raw)
+    if segments:
+        candidates.extend(segments)
+
+    for segment in segments or [raw]:
+        parts = _shell_parts(segment)
+        if not parts:
+            continue
+
+        variants: List[List[str]] = []
+        without_env = _strip_leading_env_assignments(parts)
+        if without_env and without_env != parts:
+            variants.append(without_env)
+        variants.append(parts)
+
+        cursor = list(without_env or parts)
+        for _ in range(4):
+            stripped = _strip_safe_shell_wrapper_once(cursor)
+            if not stripped or stripped == cursor:
+                break
+            variants.append(stripped)
+            env_stripped = _strip_leading_env_assignments(stripped)
+            if env_stripped and env_stripped != stripped:
+                variants.append(env_stripped)
+                cursor = env_stripped
+            else:
+                cursor = stripped
+
+        for variant in variants:
+            if variant:
+                candidates.append(_shell_join(variant))
+
+    return list(dict.fromkeys(value.strip() for value in candidates if value.strip()))
+
+
+def _bash_rule_matches(rule: Mapping[str, Any], op: Operation, match: str, pattern: str) -> bool:
+    behavior = str(rule.get("behavior") or "").strip().lower()
+    candidates = _bash_rule_candidate_values(op.command or op.value, behavior=behavior)
+    if match == "exact":
+        return any(candidate == pattern for candidate in candidates)
+    if match == "prefix":
+        wanted = pattern.strip()
+        return bool(wanted) and any(candidate.strip().startswith(wanted) for candidate in candidates)
+    if match == "glob":
+        return any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates)
+    return False
+
+
 def _rule_matches(rule: Mapping[str, Any], op: Operation) -> bool:
     if not _tool_matches(str(rule.get("tool") or ""), op):
         return False
@@ -393,6 +566,8 @@ def _rule_matches(rule: Mapping[str, Any], op: Operation) -> bool:
     pattern = str(rule.get("pattern") or "")
     if match == "tool":
         return True
+    if op.tool == "bash" and match in {"exact", "prefix", "glob"}:
+        return _bash_rule_matches(rule, op, match, pattern)
     if match == "exact":
         return op.value == pattern
     if match == "prefix":
@@ -585,11 +760,14 @@ _SHELL_WRAPPERS = {
     "stdbuf",
     "time",
 }
+_MAX_BASH_SEGMENTS_FOR_PERMISSION = 50
 _OUTPUT_REDIRECT_RE = re.compile(r"(?:^|\s)\d*>>?\s*(?!&\d)(?P<target>[^\s;|&]+)")
 _SENSITIVE_SHELL_PATH_RE = re.compile(
     r"(^|/|\$home/|~/)"
     r"("
-    r"\.ssh|\.gnupg|\.aws|\.env|authorized_keys|id_rsa|id_ed25519|"
+    r"\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|\.config/gh|"
+    r"\.env|\.npmrc|\.pypirc|\.git-credentials|\.mcp\.json|\.claude\.json|"
+    r"authorized_keys|id_rsa|id_ed25519|"
     r"\.git(/|$)|\.vscode(/|$)|\.idea(/|$)|\.github/workflows|"
     r"settings\.json|settings\.local\.json"
     r")",
@@ -653,8 +831,12 @@ def classify_bash_command(command: str) -> Tuple[str, str]:
     if _redirection_targets_sensitive_path(cmd):
         return "dangerous", "redirection targets a sensitive path"
 
+    segments = _split_shell_segments(cmd)
+    if len(segments) > _MAX_BASH_SEGMENTS_FOR_PERMISSION:
+        return "dangerous", "command is too complex to safely analyze"
+
     classifications: List[str] = []
-    for segment in _split_shell_segments(cmd):
+    for segment in segments:
         if _redirection_targets_sensitive_path(segment):
             classifications.append("dangerous")
             continue

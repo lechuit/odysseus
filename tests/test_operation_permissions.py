@@ -56,7 +56,86 @@ def test_bash_classifier_readonly_mutating_dangerous():
     assert classify_bash_command("find . -exec rm {} \\;")[0] == "dangerous"
     assert classify_bash_command("echo key > ~/.ssh/config")[0] == "dangerous"
     assert classify_bash_command("echo key > .git/config")[0] == "dangerous"
+    assert classify_bash_command("echo key > .SSH/config")[0] == "dangerous"
+    assert classify_bash_command("echo key > .github/workflows/ci.yml")[0] == "dangerous"
+    assert classify_bash_command("echo token > .npmrc")[0] == "dangerous"
     assert classify_bash_command("rm -rf /")[0] == "dangerous"
+
+
+def test_bash_rules_match_compound_subcommands(monkeypatch):
+    from src import operation_permissions as op
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: False)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "deny", "tool": "bash", "match": "prefix", "pattern": "git push"})
+    ])
+
+    decision = op.evaluate_tool_permission("bash", "git status && git push origin main")
+
+    assert decision.behavior == "deny"
+    assert decision.rule["pattern"] == "git push"
+
+
+def test_bash_rules_match_env_prefixed_deny_ask(monkeypatch):
+    from src import operation_permissions as op
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: False)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "ask", "tool": "bash", "match": "prefix", "pattern": "git push"})
+    ])
+
+    decision = op.evaluate_tool_permission("bash", "FOO=bar git push origin main", session_id="s-env")
+
+    assert decision.behavior == "ask"
+    assert decision.rule["pattern"] == "git push"
+
+
+def test_bash_rules_match_safe_wrapped_command(monkeypatch):
+    from src import operation_permissions as op
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: False)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "deny", "tool": "bash", "match": "prefix", "pattern": "git push"})
+    ])
+
+    assert op.evaluate_tool_permission("bash", "timeout 5 git push origin main").behavior == "deny"
+    assert op.evaluate_tool_permission("bash", "nohup git push origin main").behavior == "deny"
+    assert op.evaluate_tool_permission("bash", "time git push origin main").behavior == "deny"
+    assert op.evaluate_tool_permission("bash", "nice git push origin main").behavior == "deny"
+    assert op.evaluate_tool_permission("bash", "stdbuf -o0 git push origin main").behavior == "deny"
+
+
+def test_bash_allow_rule_does_not_expand_to_env_or_subcommands(monkeypatch):
+    from src import operation_permissions as op
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: False)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "allow", "tool": "bash", "match": "prefix", "pattern": "git push"})
+    ])
+
+    env_prefixed = op.evaluate_tool_permission("bash", "LD_PRELOAD=x git push origin main")
+    compound = op.evaluate_tool_permission("bash", "git status && git push origin main")
+
+    assert env_prefixed.behavior == "passthrough"
+    assert compound.behavior == "passthrough"
+
+
+def test_bash_too_many_segments_asks(monkeypatch):
+    from src import operation_permissions as op
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    command = " && ".join(["pwd"] * 51)
+    decision = op.evaluate_tool_permission("bash", command, session_id="s-many")
+
+    assert decision.behavior == "ask"
+    assert "too complex" in decision.reason
 
 
 def test_builtin_bash_policy_asks_for_mutation(monkeypatch):
