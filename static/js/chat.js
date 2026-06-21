@@ -1901,7 +1901,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                     _pendingContinue = _holder;
                     const msgInput = uiModule.el('message');
                     if (msgInput) {
-                      msgInput.value = 'You hit the step limit before finishing — the task is not complete. Continue from exactly where you left off and keep going until it is done. Do NOT repeat work already done.';
+                      msgInput.value = json.continue_prompt || 'You hit the step limit before finishing — the task is not complete. Continue from exactly where you left off and keep going until it is done. Do NOT repeat work already done.';
                       const sb = document.querySelector('.send-btn');
                       if (sb) sb.click();
                     }
@@ -2491,7 +2491,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
               _stall.remove();
               const mi = uiModule.el('message');
               if (mi) {
-                mi.value = 'Continue — you stopped before finishing. Pick up exactly where you left off and complete the task.';
+                mi.value = 'You hit the step limit before finishing — the task is not complete. Continue from exactly where you left off and keep going until it is done. Do NOT repeat work already done.';
                 const sb = document.querySelector('.send-btn');
                 if (sb) sb.click();
               }

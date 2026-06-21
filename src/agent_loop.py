@@ -686,6 +686,32 @@ _ADMIN_KEYWORDS = [
     "note", "notes", "todo list", "to-do", "reminder", "reminders",
 ]
 
+_ROUND_LIMIT_CONTINUATION_RE = re.compile(
+    r"\b(?:you hit|reached)\s+the\s+(?:\d+\s*[- ]?)?step\s+limit\b"
+    r"|continue\s+from\s+exactly\s+where\s+you\s+left\s+off"
+    r"|do\s+not\s+repeat\s+work\s+already\s+done",
+    re.IGNORECASE,
+)
+_ROUND_LIMIT_ORIGINAL_RE = re.compile(
+    r"Original user request to continue:\s*(?P<request>.*?)(?:\n\s*\n|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_round_limit_continuation(text: str) -> bool:
+    """Frontend-generated continue prompt after the agent exhausts rounds."""
+    return bool(_ROUND_LIMIT_CONTINUATION_RE.search(str(text or "").strip()))
+
+
+def _extract_round_limit_original_request(text: str) -> str:
+    """Return the embedded real task from a structured Continue prompt."""
+    match = _ROUND_LIMIT_ORIGINAL_RE.search(str(text or ""))
+    if not match:
+        return ""
+    request = (match.group("request") or "").strip()
+    return request[:600]
+
+
 def _detect_admin_intent(messages: List[Dict]) -> bool:
     """Check if the last user message suggests admin/management tool usage."""
     for msg in reversed(messages):
@@ -693,6 +719,11 @@ def _detect_admin_intent(messages: List[Dict]) -> bool:
             content = msg.get("content", "")
             if isinstance(content, list):
                 content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+            if _is_round_limit_continuation(content):
+                # The synthetic Continue prompt says "task", but that should
+                # not enable broad admin/task/session tooling. Inspect the
+                # previous real user turn instead.
+                continue
             content_lower = content.lower()
             return any(kw in content_lower for kw in _ADMIN_KEYWORDS)
     return False
@@ -723,7 +754,8 @@ _EXPLICIT_CONTINUATION_RE = re.compile(
 
 def _is_explicit_continuation(text: str) -> bool:
     """Only these terse replies may inherit older user turns for tool retrieval."""
-    return bool(_EXPLICIT_CONTINUATION_RE.match(str(text or "").strip()))
+    text = str(text or "").strip()
+    return bool(_EXPLICIT_CONTINUATION_RE.match(text) or _is_round_limit_continuation(text))
 
 
 def _assistant_requested_followup(messages: List[Dict]) -> bool:
@@ -805,6 +837,11 @@ _WORKSPACE_WRITE_SCOPE_RE = re.compile(
     r"repositorio|repositorios|c[oó]digo|codigo|fallo|problema)\b",
     re.IGNORECASE,
 )
+_SKILL_REQUEST_RE = re.compile(
+    r"\b(?:skill|skills|manage_skills|procedure|procedures|habilidad|habilidades|"
+    r"procedimiento|procedimientos)\b",
+    re.IGNORECASE,
+)
 _WORKSPACE_READ_TOOLS = {"get_workspace", "ls", "glob", "grep", "read_file"}
 _WORKSPACE_WRITE_TOOLS = _WORKSPACE_READ_TOOLS | {"edit_file", "write_file", "bash", "python"}
 
@@ -829,6 +866,43 @@ def _looks_like_workspace_read_request(text: str) -> bool:
 def _looks_like_workspace_write_request(text: str) -> bool:
     q = str(text or "")
     return bool(_WORKSPACE_WRITE_ACTION_RE.search(q) and _WORKSPACE_WRITE_SCOPE_RE.search(q))
+
+
+def _looks_like_skill_request(text: str) -> bool:
+    return bool(_SKILL_REQUEST_RE.search(str(text or "")))
+
+
+def _recent_history_used_tools(messages: List[Dict], tool_names: Set[str], max_messages: int = 60) -> bool:
+    """Detect whether recent history already used one of these tools.
+
+    Round-limit continuation prompts are synthetic, so the latest user text
+    often has no domain signal. Looking at recent assistant/tool turns lets a
+    coding task keep edit/shell tools surfaced after the "Continue" button.
+    """
+    wanted = set(tool_names or set())
+    if not wanted:
+        return False
+    seen = 0
+    fence_re = re.compile(r"```\s*(" + "|".join(re.escape(t) for t in sorted(wanted)) + r")\b")
+    for msg in reversed(messages or []):
+        seen += 1
+        if seen > max_messages:
+            break
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            if isinstance(fn, dict) and fn.get("name") in wanted:
+                return True
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+        text = str(content or "")
+        if fence_re.search(text):
+            return True
+        if any(re.search(rf"\b{re.escape(name)}\b", text) for name in wanted):
+            return True
+    return False
 
 
 def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, object]:
@@ -924,10 +998,51 @@ def _recent_context_for_retrieval(messages: List[Dict], max_user: int = 3, max_c
         # Skip injected tool-result envelopes — role=user but not human intent.
         if not content or content.startswith("[Tool execution results]"):
             continue
+        if _is_round_limit_continuation(content):
+            embedded_request = _extract_round_limit_original_request(content)
+            if embedded_request:
+                collected.append(embedded_request)
+                if len(collected) >= max_user:
+                    break
+            continue
         collected.append(content)
         if len(collected) >= max_user:
             break
     return "\n".join(collected)[:max_chars]
+
+
+def _build_round_limit_continue_prompt(
+    retrieval_query: str,
+    workspace: Optional[str],
+    relevant_tools: Optional[Set[str]],
+) -> str:
+    """Prompt used by the UI Continue button after max_rounds is reached."""
+    lines = [
+        "You hit the step limit before finishing — the task is not complete.",
+        "Continue from exactly where you left off and keep going until it is done.",
+        "Do NOT repeat work already done.",
+    ]
+    query = str(retrieval_query or "").strip()
+    if query:
+        lines.extend(["", "Original user request to continue:", query[:600]])
+    if workspace:
+        lines.extend([
+            "",
+            f"Active workspace: {workspace}",
+            "Use paths relative to that workspace. If the workspace basename is in a path, do not duplicate it.",
+        ])
+    if relevant_tools:
+        tool_hint = sorted(set(relevant_tools) & {
+            "get_workspace", "ls", "glob", "grep", "read_file",
+            "edit_file", "write_file", "bash", "python",
+        })
+        if tool_hint:
+            lines.extend([
+                "",
+                "Keep using the workspace tools needed for this task:",
+                ", ".join(tool_hint),
+            ])
+    return "\n".join(lines)
 
 def _build_system_prompt(
     messages: List[Dict],
@@ -2017,6 +2132,7 @@ async def stream_agent_loop(
     _needs_admin = _detect_admin_intent(messages)
     _last_user = _extract_last_user_message(messages)
     _intent = _classify_agent_request(messages, _last_user)
+    _round_limit_continue = _is_round_limit_continuation(_last_user)
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
@@ -2118,9 +2234,15 @@ async def stream_agent_loop(
             if _looks_like_workspace_write_request(_retrieval_query):
                 _relevant_tools.update(_WORKSPACE_WRITE_TOOLS)
                 logger.info("[tool-rag] Workspace write/edit intent; including file edit and shell tools")
+            elif _round_limit_continue and _recent_history_used_tools(
+                messages, {"edit_file", "write_file", "bash", "python"}
+            ):
+                _relevant_tools.update(_WORKSPACE_WRITE_TOOLS)
+                logger.info("[tool-rag] Round-limit workspace continuation after write/shell tools; keeping edit and shell tools")
             elif (
                 _looks_like_workspace_read_request(_retrieval_query)
                 or "files" in (_intent.get("domains") or set())
+                or _round_limit_continue
             ):
                 _relevant_tools.update(_WORKSPACE_READ_TOOLS)
                 logger.info("[tool-rag] Workspace read/analyze intent; including read-only file tools")
@@ -2164,7 +2286,10 @@ async def stream_agent_loop(
                 pass
             _sm = SkillsManager(DATA_DIR)
             _owner_skills = _sm.load(owner=owner) if _skills_on else []
-            if _owner_skills:
+            _allow_skill_tool = not (
+                _round_limit_continue and not _looks_like_skill_request(_retrieval_query)
+            )
+            if _owner_skills and _allow_skill_tool:
                 _relevant_tools.add("manage_skills")
                 if _retrieval_query:
                     # Validate against every known executable tool, not just
@@ -2180,10 +2305,14 @@ async def stream_agent_loop(
                             t for t in (_sk.get("requires_toolsets") or [])
                             if t in _known
                         )
+            elif _owner_skills and not _allow_skill_tool:
+                logger.info("[tool-rag] Round-limit continuation; suppressing manage_skills unless explicitly requested")
         except Exception as _e:
             logger.debug(f"[tool-rag] skill-aware tool include skipped: {_e}")
 
     if _relevant_tools is not None:
+        if _round_limit_continue and not _looks_like_skill_request(_retrieval_query):
+            _relevant_tools.discard("manage_skills")
         logger.info("[agent-intent] selected_tools=%s", sorted(_relevant_tools)[:50])
 
     prep_timings["tool_selection"] = time.time() - _t1
@@ -3341,7 +3470,12 @@ async def stream_agent_loop(
     # can show a "Continue" affordance instead of the turn just stopping.
     if _exhausted_rounds:
         logger.info("[agent] round cap (%d) reached mid-task — emitting rounds_exhausted", max_rounds)
-        yield f'data: {json.dumps({"type": "rounds_exhausted", "rounds": max_rounds})}\n\n'
+        continue_prompt = _build_round_limit_continue_prompt(
+            _retrieval_query,
+            workspace,
+            _relevant_tools,
+        )
+        yield f'data: {json.dumps({"type": "rounds_exhausted", "rounds": max_rounds, "continue_prompt": continue_prompt})}\n\n'
 
     # If the response is completely empty and no tools were executed,
     # yield a fallback message so the user is not left hanging.
