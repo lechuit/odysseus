@@ -2,6 +2,7 @@ import os
 import platform
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -221,6 +222,104 @@ def test_macos_sandbox_exec_profile_runs_and_enforces_paths(monkeypatch, tmp_pat
     with open(outside, "r", encoding="utf-8") as f:
         assert f.read().strip() == "approved"
     os.unlink(outside)
+
+
+@pytest.mark.skipif(platform.system() != "Linux" or not shutil.which("bwrap"), reason="requires Linux bubblewrap")
+def test_linux_bubblewrap_runtime_enforces_paths(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret-ok", encoding="utf-8")
+    outside_dir = Path.home() / f".odysseus-sandbox-runtime-{os.getpid()}"
+    outside = outside_dir / "outside.txt"
+    outside_dir.mkdir(exist_ok=False)
+    outside.write_text("outside-before", encoding="utf-8")
+
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "fail_if_unavailable": True,
+        "filesystem": {"deny_read": [str(secret)]},
+        "network": {"deny": False},
+    })
+
+    def run(command, **kwargs):
+        plan = sandbox_runner._linux_bwrap_plan(command, str(ws), **kwargs)
+        assert plan is not None
+        return subprocess.run(plan.command, cwd=str(ws), text=True, capture_output=True, timeout=10)
+
+    try:
+        smoke = run(("/bin/true",))
+        if smoke.returncode != 0:
+            pytest.skip(f"bubblewrap is installed but not runnable here: {smoke.stderr[:240]}")
+
+        write_ws = run(("/bin/sh", "-c", "echo ok > inside.txt && cat inside.txt"))
+        assert write_ws.returncode == 0
+        assert write_ws.stdout.strip() == "ok"
+
+        write_outside = run(("/bin/sh", "-c", f"echo nope > {outside}"))
+        assert write_outside.returncode != 0
+        assert outside.read_text(encoding="utf-8") == "outside-before"
+
+        read_denied = run(("/bin/cat", str(secret)))
+        assert read_denied.returncode != 0
+
+        read_allowed = run(("/bin/cat", str(secret)), extra_allow_read=[str(secret)])
+        assert read_allowed.returncode == 0
+        assert read_allowed.stdout.strip() == "secret-ok"
+
+        write_allowed = run(
+            ("/bin/sh", "-c", f"echo approved > {outside} && cat {outside}"),
+            extra_allow_write=[str(outside_dir)],
+        )
+        assert write_allowed.returncode == 0
+        assert write_allowed.stdout.strip() == "approved"
+        assert outside.read_text(encoding="utf-8").strip() == "approved"
+    finally:
+        try:
+            outside.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            outside_dir.rmdir()
+        except OSError:
+            pass
+
+
+@pytest.mark.skipif(platform.system() != "Linux" or not shutil.which("bwrap"), reason="requires Linux bubblewrap")
+def test_linux_bubblewrap_runtime_rebinds_approved_child_inside_mask(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret_dir = tmp_path / "sensitive"
+    nested_dir = secret_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    secret = nested_dir / "token.txt"
+    secret.write_text("nested-secret-ok", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "fail_if_unavailable": True,
+        "filesystem": {"deny_read": [str(secret_dir)]},
+        "network": {"deny": False},
+    })
+
+    def run(command, **kwargs):
+        plan = sandbox_runner._linux_bwrap_plan(command, str(ws), **kwargs)
+        assert plan is not None
+        return subprocess.run(plan.command, cwd=str(ws), text=True, capture_output=True, timeout=10)
+
+    smoke = run(("/bin/true",))
+    if smoke.returncode != 0:
+        pytest.skip(f"bubblewrap is installed but not runnable here: {smoke.stderr[:240]}")
+
+    read_denied = run(("/bin/cat", str(secret)))
+    assert read_denied.returncode != 0
+
+    read_allowed = run(("/bin/cat", str(secret)), extra_allow_read=[str(secret)])
+    assert read_allowed.returncode == 0
+    assert read_allowed.stdout.strip() == "nested-secret-ok"
 
 
 def test_bubblewrap_plan_overlays_write_denies(monkeypatch, tmp_path):

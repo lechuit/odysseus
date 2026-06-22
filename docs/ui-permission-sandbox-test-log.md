@@ -178,9 +178,13 @@ No pending macOS UI checks remain from this sandbox batch.
   - approved nested read after directory mask;
   - approved write after write deny;
   - firejail operation overrides ordered after denies.
+- Runtime tests prepared for Linux:
+  - `test_linux_bubblewrap_runtime_enforces_paths`
+  - `test_linux_bubblewrap_runtime_rebinds_approved_child_inside_mask`
+  - These skip automatically on non-Linux or when `bubblewrap` is unavailable.
 - Validation run:
-  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 66 passed.
-  - broader permission/sandbox/agent suite: 166 passed.
+  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 66 passed, 2 skipped on macOS.
+  - broader permission/sandbox/agent suite: 166 passed, 2 skipped on macOS.
 - Remaining real-host check:
   - Run the same scenarios on a Linux host with `bubblewrap` or `firejail` installed to confirm runtime enforcement, not just generated command shape.
 
