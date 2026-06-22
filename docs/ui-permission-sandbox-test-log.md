@@ -234,3 +234,20 @@ No pending macOS UI checks remain from this sandbox batch.
 - Validation run:
   - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 68 passed, 2 skipped on macOS.
   - broader permission/sandbox/agent suite: 168 passed, 2 skipped on macOS.
+
+## Persistent `allow_read` sandbox precedence
+
+- Date: 2026-06-22
+- Reference behavior reviewed:
+  - `sandbox.filesystem.allowRead` is meant to re-allow reading inside a `denyRead` region.
+- Odysseus hardening added:
+  - persistent `filesystem.allow_read` is kept separate from baseline read mounts;
+  - macOS appends persistent read allowances after `deny_read`, same as one-shot approvals;
+  - Linux `bubblewrap` rebinds persistent read allowances after deny masks and recreates masked parent directories when needed;
+  - Linux `firejail` emits persistent read whitelists after blacklists.
+- Runtime tests prepared for Linux:
+  - `test_linux_bubblewrap_runtime_honors_configured_allow_read_inside_mask`
+  - This skips automatically on non-Linux or when `bubblewrap` is unavailable.
+- Validation run:
+  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 72 passed, 3 skipped on macOS.
+  - broader permission/sandbox/agent suite: 172 passed, 3 skipped on macOS.

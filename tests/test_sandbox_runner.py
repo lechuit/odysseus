@@ -166,6 +166,28 @@ def test_macos_profile_appends_operation_allowances_after_denies(monkeypatch, tm
     assert allow_write_idx > deny_write_idx
 
 
+def test_macos_profile_appends_configured_allow_read_after_denies(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {
+            "deny_read": [str(secret)],
+            "allow_read": [str(secret)],
+        },
+        "network": {"deny": False},
+    })
+
+    profile = sandbox_runner._macos_sandbox_profile(str(ws))
+
+    deny_idx = profile.index(f'(deny file-read* (literal "{secret}"))')
+    allow_idx = profile.index(f'(allow file-read* (literal "{secret}"))')
+    assert allow_idx > deny_idx
+
+
 @pytest.mark.skipif(platform.system() != "Darwin" or not shutil.which("sandbox-exec"), reason="requires macOS sandbox-exec")
 def test_macos_sandbox_exec_profile_runs_and_enforces_paths(monkeypatch, tmp_path):
     from src import sandbox_runner
@@ -369,6 +391,40 @@ def test_linux_bubblewrap_runtime_rebinds_approved_child_inside_mask(monkeypatch
     assert read_allowed.stdout.strip() == "nested-secret-ok"
 
 
+@pytest.mark.skipif(platform.system() != "Linux" or not shutil.which("bwrap"), reason="requires Linux bubblewrap")
+def test_linux_bubblewrap_runtime_honors_configured_allow_read_inside_mask(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret_dir = tmp_path / "sensitive"
+    secret_dir.mkdir()
+    secret = secret_dir / "token.txt"
+    secret.write_text("configured-allow-read-ok", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "fail_if_unavailable": True,
+        "filesystem": {
+            "deny_read": [str(secret_dir)],
+            "allow_read": [str(secret)],
+        },
+        "network": {"deny": False},
+    })
+
+    def run(command, **kwargs):
+        plan = sandbox_runner._linux_bwrap_plan(command, str(ws), **kwargs)
+        assert plan is not None
+        return subprocess.run(plan.command, cwd=str(ws), text=True, capture_output=True, timeout=10)
+
+    smoke = run(("/bin/true",))
+    if smoke.returncode != 0:
+        pytest.skip(f"bubblewrap is installed but not runnable here: {smoke.stderr[:240]}")
+
+    read_allowed = run(("/bin/cat", str(secret)))
+    assert read_allowed.returncode == 0
+    assert read_allowed.stdout.strip() == "configured-allow-read-ok"
+
+
 def test_bubblewrap_plan_overlays_write_denies(monkeypatch, tmp_path):
     from src import sandbox_runner
 
@@ -454,6 +510,32 @@ def test_bubblewrap_plan_rebinds_approved_read_after_file_deny(monkeypatch, tmp_
     assert allow_idx > deny_idx
 
 
+def test_bubblewrap_plan_rebinds_configured_allow_read_after_file_deny(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {
+            "deny_read": [str(secret)],
+            "allow_read": [str(secret)],
+        },
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws))
+
+    assert plan is not None
+    command = list(plan.command)
+    deny_idx = _arg_triplet_index(command, "--ro-bind", "/dev/null", str(secret))
+    allow_idx = _arg_triplet_index(command, "--ro-bind", str(secret), str(secret), start=deny_idx + 1)
+    assert allow_idx > deny_idx
+
+
 def test_bubblewrap_plan_recreates_masked_parent_for_approved_nested_read(monkeypatch, tmp_path):
     from src import sandbox_runner
 
@@ -472,6 +554,36 @@ def test_bubblewrap_plan_recreates_masked_parent_for_approved_nested_read(monkey
     monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
 
     plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws), extra_allow_read=[str(secret)])
+
+    assert plan is not None
+    command = list(plan.command)
+    mask_idx = _arg_pair_index(command, "--tmpfs", str(secret_dir))
+    nested_dir_idx = _arg_pair_index(command, "--dir", str(nested_dir), start=mask_idx + 1)
+    allow_idx = _arg_triplet_index(command, "--ro-bind", str(secret), str(secret), start=nested_dir_idx + 1)
+    assert mask_idx < nested_dir_idx < allow_idx
+
+
+def test_bubblewrap_plan_recreates_masked_parent_for_configured_allow_read(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret_dir = tmp_path / "sensitive"
+    nested_dir = secret_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    secret = nested_dir / "token.txt"
+    secret.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {
+            "deny_read": [str(secret_dir)],
+            "allow_read": [str(secret)],
+        },
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws))
 
     assert plan is not None
     command = list(plan.command)
@@ -562,6 +674,30 @@ def test_firejail_plan_orders_operation_overrides_after_denies(monkeypatch, tmp_
     command = list(plan.command)
     assert command.index(f"--blacklist={secret}") < command.index(f"--whitelist={secret}")
     assert command.index(f"--read-only={outside}") < command.index(f"--read-write={outside}")
+
+
+def test_firejail_plan_orders_configured_allow_read_after_deny(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {
+            "deny_read": [str(secret)],
+            "allow_read": [str(secret)],
+        },
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/firejail" if name == "firejail" else None)
+
+    plan = sandbox_runner._linux_firejail_plan(("echo", "hi"), str(ws))
+
+    assert plan is not None
+    command = list(plan.command)
+    assert command.index(f"--blacklist={secret}") < command.index(f"--whitelist={secret}")
 
 
 def _has_arg_pair(command, option, value):

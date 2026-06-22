@@ -318,7 +318,13 @@ def _default_deny_paths(cwd: str) -> Tuple[List[str], List[str]]:
     return _unique_real(deny_read), _unique_real(deny_write)
 
 
-def _workspace_paths(cwd: str) -> Tuple[List[str], List[str], List[str], List[str]]:
+def _filesystem_setting_paths(key: str) -> List[str]:
+    settings = normalize_sandbox_settings(_settings())
+    fs = settings.get("filesystem") if isinstance(settings.get("filesystem"), dict) else {}
+    return _unique_real(_listish(fs.get(key)))
+
+
+def _workspace_paths(cwd: str, *, include_read_overrides: bool = True) -> Tuple[List[str], List[str], List[str], List[str]]:
     settings = normalize_sandbox_settings(_settings())
     fs = settings.get("filesystem") if isinstance(settings.get("filesystem"), dict) else {}
     allow_read = [cwd, "/tmp"]
@@ -331,7 +337,8 @@ def _workspace_paths(cwd: str) -> Tuple[List[str], List[str], List[str], List[st
     deny_write.extend(deny_both)
     deny_read.extend(_listish(fs.get("deny_read")))
     deny_write.extend(_listish(fs.get("deny_write")))
-    allow_read.extend(_listish(fs.get("allow_read")))
+    if include_read_overrides:
+        allow_read.extend(_listish(fs.get("allow_read")))
     allow_write.extend(_listish(fs.get("allow_write")))
     return (_unique_real(allow_read), _unique_real(allow_write), _unique_real(deny_read), _unique_real(deny_write))
 
@@ -360,8 +367,11 @@ def _macos_sandbox_profile(
     extra_allow_write: Optional[Sequence[str]] = None,
     extra_allow_network: bool = False,
 ) -> str:
-    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
-    extra_read = _extra_paths(extra_allow_read)
+    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd, include_read_overrides=False)
+    # Persistent filesystem.allow_read has the same precedence contract as a
+    # one-shot approved read: it intentionally reopens a narrow path after
+    # deny_read masks. Keep it out of baseline mounts and append it below.
+    extra_read = _unique_real([*_filesystem_setting_paths("allow_read"), *_extra_paths(extra_allow_read)])
     extra_write = _extra_paths(extra_allow_write)
     lines = [
         "(version 1)",
@@ -434,13 +444,13 @@ def _linux_bwrap_plan(
     bwrap = shutil.which("bwrap")
     if not bwrap:
         return None
-    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd, include_read_overrides=False)
     # Keep operation-scoped approvals separate from the baseline workspace
     # mounts.  The default profile intentionally masks sensitive paths after
     # mounting the workspace; approved one-shot paths must therefore be mounted
     # again at the end so the reviewed exception wins, mirroring the macOS SBPL
     # profile ordering.
-    extra_read = _extra_paths(extra_allow_read)
+    extra_read = _unique_real([*_filesystem_setting_paths("allow_read"), *_extra_paths(extra_allow_read)])
     extra_write = _extra_paths(extra_allow_write)
     args: List[str] = [
         bwrap,
@@ -605,11 +615,11 @@ def _linux_firejail_plan(
     firejail = shutil.which("firejail")
     if not firejail:
         return None
-    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd, include_read_overrides=False)
     # Firejail accepts all constraints up front, but keeping approved one-shot
     # overrides after blacklists/read-only rules makes the generated command
     # reflect the same precedence contract as macOS and bubblewrap.
-    extra_read = _extra_paths(extra_allow_read)
+    extra_read = _unique_real([*_filesystem_setting_paths("allow_read"), *_extra_paths(extra_allow_read)])
     extra_write = _extra_paths(extra_allow_write)
     private = cwd
     args_list = [firejail, "--quiet", f"--private={private}", "--noprofile"]
