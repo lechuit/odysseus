@@ -213,6 +213,25 @@ No pending macOS UI checks remain from this sandbox batch.
   - On Linux, run `manage_settings {"action":"sandbox_status"}` with `bubblewrap` installed and confirm `backend_runtime_ready=true`.
   - Repeat on a Linux host/container where `bubblewrap` is installed but user namespaces are unavailable and confirm the warning/error surfaces clearly.
 
+### UI smoke after local install sync
+
+- Marker: `UI_SANDBOX_STATUS_7159FBE`
+- Local install commit: `7159fbe`
+- Prompt: strict single-tool `manage_settings` with `{"action":"sandbox_status"}`, submitted by clicking the visible Send button.
+- Result:
+  - clean chat created from the composer `+ New` button;
+  - one visible `MANAGE_SETTINGS done` tool card;
+  - assistant returned JSON:
+    - `enabled: true`
+    - `sandboxed: true`
+    - `selected_backend: sandbox-exec`
+    - `effective_mode: sandboxed`
+    - `command_execution_blocked: false`
+    - `backend_runtime_ready: null`
+    - `platform: darwin`
+- Note:
+  - The browser automation detector waited for the word `Thinking` to disappear and timed out after 5 minutes, but the final UI state was already complete. The visible transcript retained a `Thinking` label above the completed tool card/answer, so future detectors should key off the final answer/tool card rather than the raw presence of `Thinking`.
+
 ## Regression found during sandbox status UI check
 
 ### `UI_SANDBOX_STATUS_2091`
