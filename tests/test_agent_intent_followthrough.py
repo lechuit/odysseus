@@ -213,6 +213,60 @@ def test_strict_tool_turn_forces_tool_free_answer_after_literal_tool(monkeypatch
     assert any(event.get("delta") == "literal result acknowledged" for event in events)
 
 
+def test_strict_tool_turn_overrides_model_copied_literal_args(monkeypatch):
+    """Exact literal prompts should not trust the model to transcribe paths."""
+    streams = []
+    executed = []
+
+    monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default, raising=False)
+    monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None, raising=False)
+    monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10, raising=False)
+
+    async def fake_stream(_candidates, messages, **kwargs):
+        round_index = len(streams)
+        streams.append(messages)
+        if round_index == 0:
+            call = {
+                "name": "bash",
+                "arguments": json.dumps({
+                    "command": "cd /Users/gabielpena/Desktop/Personal/odysseus && git status"
+                }),
+            }
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
+        else:
+            yield f'data: {json.dumps({"delta": "blocked/denied handled"})}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake_execute(block, *args, **kwargs):
+        executed.append(block)
+        return ("bash", {"output": "permission card", "exit_code": 0})
+
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream, raising=False)
+    monkeypatch.setattr(agent_loop, "execute_tool_block", fake_execute, raising=False)
+
+    literal_command = "cd /Users/gabrielpena/Desktop/Personal/odysseus && git status"
+    chunks = _collect(
+        agent_loop.stream_agent_loop(
+            "https://api.openai.com/v1",
+            "gpt-4o",
+            [{"role": "user", "content": f"Run exact command:\n{literal_command}"}],
+            relevant_tools={"bash"},
+            strict_tool_turn=True,
+            strict_tool_operation={"tool": "bash", "content": literal_command, "command": literal_command},
+            workspace="/tmp/odysseus-workspace",
+            max_rounds=3,
+            _is_teacher_run=True,
+        )
+    )
+    events = _events(chunks)
+
+    assert [block.content for block in executed] == [literal_command]
+    assert any(
+        event.get("type") == "tool_output" and event.get("command") == literal_command
+        for event in events
+    )
+
+
 def test_strict_single_tool_turn_blocks_adjacent_admin_tools(monkeypatch):
     """Exact manage_settings probes must not drift into manage_skills."""
     streams = []

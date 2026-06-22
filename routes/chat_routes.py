@@ -83,6 +83,23 @@ _EXPLICIT_SINGLE_TOOL_NAMES = {
     "update_plan",
     "ask_user",
 }
+_LITERAL_BASH_COMMAND_INTRO_RE = re.compile(
+    r"(?:"
+    r"(?:comando|command|orden|cmd)\s+(?:literal|exact[oa]s?|exactly)"
+    r"|(?:literal|exact[oa]s?|exactly)\s+(?:comando|command|bash)"
+    r"|run\s+this\s+exact\s+command"
+    r")"
+    r"[^:\n]*:\s*$",
+    re.IGNORECASE,
+)
+_LITERAL_BASH_COMMAND_STOP_RE = re.compile(
+    r"^\s*(?:"
+    r"no\s+uses|no\s+use|sin\s+usar|do\s+not\s+use|don't\s+use|"
+    r"despu[eé]s|after\b|si\s+aparece|when\b|esta\s+es|this\s+is|"
+    r"responde|respond|luego\b|then\b"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _is_literal_tool_control_turn(message: str) -> bool:
@@ -162,6 +179,43 @@ def _explicit_single_tool_control_relevant_tools(message: str) -> Optional[Set[s
     if normalized not in _EXPLICIT_SINGLE_TOOL_NAMES and not normalized.startswith("mcp__"):
         return None
     return {normalized}
+
+
+def _literal_tool_control_operation(message: str, tools: Optional[Set[str]]) -> Optional[Dict[str, str]]:
+    """Return an exact operation for high-confidence literal tool prompts.
+
+    Strict tool turns hide unrelated schemas, but a small model can still typo a
+    path while copying the requested command.  For the common "exact bash
+    command:" shape, parse the command once from the user message and let the
+    agent loop override the model-produced arguments with this authoritative
+    payload.
+    """
+
+    if not isinstance(message, str) or not tools or set(tools) != {"bash"}:
+        return None
+    lines = message.splitlines()
+    for idx, line in enumerate(lines):
+        if not _LITERAL_BASH_COMMAND_INTRO_RE.search(line):
+            continue
+        collected: List[str] = []
+        in_fence = False
+        for raw in lines[idx + 1 :]:
+            stripped = raw.strip()
+            if not collected and not stripped:
+                continue
+            if stripped.startswith("```"):
+                if not collected:
+                    in_fence = True
+                    continue
+                if in_fence:
+                    break
+            if not in_fence and _LITERAL_BASH_COMMAND_STOP_RE.search(raw):
+                break
+            collected.append(raw.rstrip())
+        command = "\n".join(collected).strip()
+        if command:
+            return {"tool": "bash", "content": command, "command": command}
+    return None
 
 
 def _stream_set(session_id: str, **fields) -> None:
@@ -850,6 +904,11 @@ def setup_chat_routes(
         explicit_tool_control_tools = _explicit_single_tool_control_relevant_tools(message)
         strict_tool_control = bool(literal_tool_control or explicit_tool_control_tools)
         strict_tool_control_tools = explicit_tool_control_tools or literal_tool_control_tools
+        strict_tool_control_operation = (
+            _literal_tool_control_operation(message, strict_tool_control_tools)
+            if strict_tool_control and not permission_context_note
+            else None
+        )
         if permission_context_note or strict_tool_control:
             # A permission label such as "Permitir una vez" is not a new task.
             # Do not run memory/RAG/skill preprocessing against that label; it
@@ -1511,6 +1570,7 @@ def setup_chat_routes(
                         suppress_local_context=bool(permission_context_note or strict_tool_control),
                         strict_tool_turn=bool(strict_tool_control and not permission_context_note),
                         permission_resume_operation=permission_resume_operation,
+                        strict_tool_operation=strict_tool_control_operation,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:

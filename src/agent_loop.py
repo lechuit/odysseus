@@ -2169,6 +2169,7 @@ async def stream_agent_loop(
     suppress_local_context: bool = False,
     strict_tool_turn: bool = False,
     permission_resume_operation: Optional[Dict] = None,
+    strict_tool_operation: Optional[Dict] = None,
     _is_teacher_run: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
@@ -2212,6 +2213,11 @@ async def stream_agent_loop(
     _intent = _classify_agent_request(messages, _last_user)
     _round_limit_continue = _is_round_limit_continuation(_last_user)
     _permission_resume_context = _is_permission_resume_context(messages)
+    _strict_tool_block = (
+        _tool_block_from_permission_operation(strict_tool_operation)
+        if strict_tool_turn
+        else None
+    )
     if _permission_resume_context:
         suppress_local_context = True
     if strict_tool_turn:
@@ -3066,6 +3072,15 @@ async def stream_agent_loop(
                     b for b in tool_blocks
                     if b.tool_type in _allowed_strict_tools
                 ]
+            if _strict_tool_block is not None:
+                _matching = [b for b in tool_blocks if b.tool_type == _strict_tool_block.tool_type]
+                if _matching:
+                    if any(b.content != _strict_tool_block.content for b in _matching):
+                        logger.info(
+                            "[agent] strict literal-tool turn overriding model args for %s",
+                            _strict_tool_block.tool_type,
+                        )
+                    tool_blocks = [_strict_tool_block]
 
         # Force-answer round: we told the model to STOP calling tools and
         # answer. If it ignored that and emitted a (possibly DSML) tool

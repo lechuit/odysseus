@@ -176,7 +176,12 @@ def test_literal_tool_control_turn_suppresses_memory_preprocessing():
     assert "relevant_tools=permission_resume_tools or strict_tool_control_tools" in route_source
     assert "suppress_local_context=bool(permission_context_note or strict_tool_control)" in route_source
     assert "strict_tool_turn=bool(strict_tool_control and not permission_context_note)" in route_source
+    assert "def _literal_tool_control_operation" in route_source
+    assert "strict_tool_control_operation = (" in route_source
+    assert "strict_tool_operation=strict_tool_control_operation" in route_source
     assert "strict_tool_turn: bool = False" in agent_source
+    assert "strict_tool_operation: Optional[Dict] = None" in agent_source
+    assert "strict literal-tool turn overriding model args" in agent_source
     assert "The requested literal tool operation has now executed" in agent_source
 
 
