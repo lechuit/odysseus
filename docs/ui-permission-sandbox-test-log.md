@@ -231,6 +231,10 @@ No pending macOS UI checks remain from this sandbox batch.
 - Validation run:
   - `tests/test_sandbox_runner.py tests/test_operation_permission_settings.py`: 45 passed, 3 skipped on macOS.
   - Manual macOS runtime self-test with temporary in-process sandbox settings: passed 5/5 on `sandbox-exec`.
+  - CLI harness added: `python scripts/sandbox_self_test.py --preset strict_local --pretty --fail-on-fail`.
+  - CLI harness macOS runtime run: passed 5/5 on `sandbox-exec`.
+- Repro doc:
+  - See `docs/linux-sandbox-validation.md` for the Linux CLI/UI validation commands.
 - Remaining real-host check:
   - In the UI on a Linux host, run strict single-tool `manage_settings` with `{"action":"sandbox_self_test"}` and confirm `overall_passed=true`, `passed_count=5`, and `selected_backend` is `bubblewrap` or `firejail`.
 
