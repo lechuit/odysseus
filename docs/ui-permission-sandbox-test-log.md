@@ -282,3 +282,25 @@ No pending macOS UI checks remain from this sandbox batch.
 - Validation run:
   - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 75 passed, 3 skipped on macOS.
   - broader permission/sandbox/agent suite: 247 passed, 3 skipped on macOS.
+
+### UI regression: strict single-tool prompt with colon was not recognized
+
+- UI marker: `UI_SANDBOX_MODE_515DB42`
+- Prompt:
+  - `Ejecuta exactamente una sola herramienta: manage_settings con este JSON: {"action":"sandbox_status"}`
+  - `No uses ninguna otra herramienta.`
+- Actual behavior before fix:
+  - The first agent round did not enter strict single-tool mode.
+  - Logs showed low-signal workspace fallback instead:
+    - `selected_tools=['ask_user', 'get_workspace', 'glob', 'grep', 'ls', 'manage_memory', 'manage_skills', 'read_file', 'update_plan']`
+    - `tools_sent=23`
+  - The model drifted into unrelated skill/session work and eventually requested approval for `ls: /tmp`.
+  - The pending permission card was denied in the UI to leave the chat safe.
+- Root cause:
+  - `_explicit_single_tool_control_relevant_tools()` recognized `la herramienta manage_settings` but not `herramienta: manage_settings`.
+- Fix:
+  - The explicit single-tool parser now accepts `herramienta: tool_name`, `tool: tool_name`, backticked names, and `una sola/single` qualifiers.
+- Validation run:
+  - Added `tests/test_chat_route_strict_tool_parser.py`.
+  - `tests/test_chat_route_strict_tool_parser.py tests/test_chat_route_tool_policy.py tests/test_agent_intent_followthrough.py tests/test_agent_loop.py tests/test_tool_policy.py`: 102 passed on macOS.
+  - broader permission/sandbox/agent suite: 255 passed, 3 skipped on macOS.

@@ -57,12 +57,13 @@ _LITERAL_TOOL_CONTROL_RE = re.compile(
 )
 _EXPLICIT_SINGLE_TOOL_CONTROL_RE = re.compile(
     r"\b(?:ejecuta|ejecutar|invoca|invocar|llama|llamar|usa|usar|call|invoke|run|execute)\b"
-    r".{0,140}\b(?:herramienta|tool)\b\s+`?([a-zA-Z_][a-zA-Z0-9_]*(?:__[a-zA-Z0-9_]+)*)`?",
+    r".{0,140}\b(?:herramienta|tool)\b\s*(?:[:：=\-]\s*)?"
+    r"`?([a-zA-Z_][a-zA-Z0-9_]*(?:__[a-zA-Z0-9_]+)*)`?",
     re.IGNORECASE | re.DOTALL,
 )
 _EXPLICIT_SINGLE_TOOL_QUALIFIER_RE = re.compile(
-    r"\b(?:exactamente|exact[oa]s?|exactly|literal|solo|s[oó]lo|only)\b"
-    r"|(?:\b(?:no uses|sin usar|without using|do not use|don't use)\b.{0,80}\b(?:otras herramientas|other tools|tools)\b)",
+    r"\b(?:exactamente|exact[oa]s?|exactly|literal|solo|sola|s[oó]lo|only|single)\b"
+    r"|(?:\b(?:no uses|sin usar|without using|do not use|don't use)\b.{0,80}\b(?:otras herramientas|otra herramienta|other tools|tools)\b)",
     re.IGNORECASE | re.DOTALL,
 )
 _EXPLICIT_SINGLE_TOOL_NAMES = {
