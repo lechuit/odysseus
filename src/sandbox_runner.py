@@ -368,8 +368,13 @@ def _linux_bwrap_plan(
     if not bwrap:
         return None
     allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
-    allow_read = _unique_real([*allow_read, *_extra_paths(extra_allow_read)])
-    allow_write = _unique_real([*allow_write, *_extra_paths(extra_allow_write)])
+    # Keep operation-scoped approvals separate from the baseline workspace
+    # mounts.  The default profile intentionally masks sensitive paths after
+    # mounting the workspace; approved one-shot paths must therefore be mounted
+    # again at the end so the reviewed exception wins, mirroring the macOS SBPL
+    # profile ordering.
+    extra_read = _extra_paths(extra_allow_read)
+    extra_write = _extra_paths(extra_allow_write)
     args: List[str] = [
         bwrap,
         "--die-with-parent",
@@ -388,7 +393,8 @@ def _linux_bwrap_plan(
             "--tmpfs", "/tmp",
         ]
     )
-    for path in _linux_parent_dirs_for_mounts([*allow_read, *allow_write, *deny_read, *deny_write]):
+    all_mounts = [*allow_read, *allow_write, *deny_read, *deny_write, *extra_read, *extra_write]
+    for path in _linux_parent_dirs_for_mounts(all_mounts):
         args.extend(["--dir", path])
     allow_write_set = set(allow_write)
     for path in allow_read:
@@ -410,6 +416,17 @@ def _linux_bwrap_plan(
                 null_device = "/dev/null"
                 if os.path.exists(null_device):
                     args.extend(["--ro-bind", null_device, path])
+    for path in _linux_parent_dirs_after_masks([*extra_read, *extra_write], [*deny_read, *deny_write]):
+        args.extend(["--dir", path])
+    extra_write_set = set(extra_write)
+    for path in extra_read:
+        if path in extra_write_set:
+            continue
+        if os.path.exists(path):
+            args.extend(["--ro-bind", path, path])
+    for path in extra_write:
+        if os.path.exists(path):
+            args.extend(["--bind", path, path])
     args.extend(["--chdir", cwd, *command])
     return SandboxPlan(enabled=True, backend="bubblewrap", command=tuple(args), sandboxed=True)
 
@@ -463,6 +480,53 @@ def _linux_parent_dirs_for_mounts(paths: Sequence[str]) -> List[str]:
     return out
 
 
+def _is_same_or_child(path: str, parent: str) -> bool:
+    try:
+        path_norm = os.path.normcase(_real(path))
+        parent_norm = os.path.normcase(_real(parent))
+        if path_norm == parent_norm:
+            return True
+        return os.path.commonpath([path_norm, parent_norm]) == parent_norm
+    except (OSError, ValueError):
+        return False
+
+
+def _linux_parent_dirs_after_masks(paths: Sequence[str], mask_paths: Sequence[str]) -> List[str]:
+    """Return dirs that must be recreated after a deny mask is mounted.
+
+    A bubblewrap ``--tmpfs /home/me/.ssh`` deny hides any parent directories
+    that were created below ``.ssh`` before the mask.  When the user approves
+    a narrow child such as ``/home/me/.ssh/config`` or
+    ``/home/me/.ssh/nested/key``, recreate just the in-mask parent dirs before
+    appending the operation-scoped bind.
+    """
+
+    mask_dirs = [_real(path) for path in mask_paths if path and os.path.isdir(_real(path))]
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        if not raw:
+            continue
+        path = _real(raw)
+        parent = path if os.path.isdir(path) else (os.path.dirname(path) or "/")
+        for mask in mask_dirs:
+            if parent == mask or not _is_same_or_child(parent, mask):
+                continue
+            pieces: List[str] = []
+            cursor = parent
+            while cursor and cursor != "/" and cursor != mask:
+                pieces.append(cursor)
+                next_cursor = os.path.dirname(cursor.rstrip("/")) or "/"
+                if next_cursor == cursor:
+                    break
+                cursor = next_cursor
+            for directory in reversed(pieces):
+                if directory not in seen:
+                    seen.add(directory)
+                    out.append(directory)
+    return out
+
+
 def _linux_firejail_plan(
     command: Sequence[str],
     cwd: str,
@@ -475,8 +539,11 @@ def _linux_firejail_plan(
     if not firejail:
         return None
     allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
-    allow_read = _unique_real([*allow_read, *_extra_paths(extra_allow_read)])
-    allow_write = _unique_real([*allow_write, *_extra_paths(extra_allow_write)])
+    # Firejail accepts all constraints up front, but keeping approved one-shot
+    # overrides after blacklists/read-only rules makes the generated command
+    # reflect the same precedence contract as macOS and bubblewrap.
+    extra_read = _extra_paths(extra_allow_read)
+    extra_write = _extra_paths(extra_allow_write)
     private = cwd
     args_list = [firejail, "--quiet", f"--private={private}", "--noprofile"]
     if _network_denied() and not extra_allow_network:
@@ -496,6 +563,14 @@ def _linux_firejail_plan(
     for path in deny_write:
         if os.path.exists(path) and path not in writable:
             args_list.append(f"--read-only={path}")
+    for path in extra_read:
+        if os.path.exists(path) and path != private:
+            args_list.append(f"--whitelist={path}")
+    for path in extra_write:
+        if os.path.exists(path):
+            if path != private:
+                args_list.append(f"--whitelist={path}")
+            args_list.append(f"--read-write={path}")
     args = (*args_list, "--", *command)
     return SandboxPlan(enabled=True, backend="firejail", command=args, sandboxed=True)
 

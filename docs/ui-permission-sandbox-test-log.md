@@ -163,6 +163,27 @@ These should be run after the sandbox runner changes are installed locally and t
 
 No pending macOS UI checks remain from this sandbox batch.
 
+## Linux sandbox plan hardening
+
+- Date: 2026-06-22
+- Scope: unit-level command-plan validation for Linux backends; not a real Linux runtime execution yet.
+- Change validated:
+  - `bubblewrap` now keeps operation-scoped approved read/write mounts separate from baseline workspace mounts;
+  - default/sensitive deny masks are applied first;
+  - approved one-shot paths are rebound after those masks so the explicit approval wins for the reviewed path;
+  - nested approved reads inside a masked directory recreate the required in-sandbox parent directories after the mask;
+  - `firejail` emits operation-scoped whitelists/read-write overrides after blacklist/read-only rules.
+- Tests added:
+  - approved read after file deny;
+  - approved nested read after directory mask;
+  - approved write after write deny;
+  - firejail operation overrides ordered after denies.
+- Validation run:
+  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 66 passed.
+  - broader permission/sandbox/agent suite: 166 passed.
+- Remaining real-host check:
+  - Run the same scenarios on a Linux host with `bubblewrap` or `firejail` installed to confirm runtime enforcement, not just generated command shape.
+
 ## Regression found during sandbox status UI check
 
 ### `UI_SANDBOX_STATUS_2091`

@@ -285,6 +285,79 @@ def test_bubblewrap_plan_creates_parent_dirs_for_outside_mounts(monkeypatch, tmp
     assert _has_arg_pair(command, "--bind", str(write_dir))
 
 
+def test_bubblewrap_plan_rebinds_approved_read_after_file_deny(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {"deny_read": [str(secret)]},
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws), extra_allow_read=[str(secret)])
+
+    assert plan is not None
+    command = list(plan.command)
+    deny_idx = _arg_triplet_index(command, "--ro-bind", "/dev/null", str(secret))
+    allow_idx = _arg_triplet_index(command, "--ro-bind", str(secret), str(secret), start=deny_idx + 1)
+    assert allow_idx > deny_idx
+
+
+def test_bubblewrap_plan_recreates_masked_parent_for_approved_nested_read(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret_dir = tmp_path / "sensitive"
+    nested_dir = secret_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    secret = nested_dir / "token.txt"
+    secret.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {"deny_read": [str(secret_dir)]},
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws), extra_allow_read=[str(secret)])
+
+    assert plan is not None
+    command = list(plan.command)
+    mask_idx = _arg_pair_index(command, "--tmpfs", str(secret_dir))
+    nested_dir_idx = _arg_pair_index(command, "--dir", str(nested_dir), start=mask_idx + 1)
+    allow_idx = _arg_triplet_index(command, "--ro-bind", str(secret), str(secret), start=nested_dir_idx + 1)
+    assert mask_idx < nested_dir_idx < allow_idx
+
+
+def test_bubblewrap_plan_rebinds_approved_write_after_write_deny(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside-write"
+    outside.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {"deny_write": [str(outside)]},
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws), extra_allow_write=[str(outside)])
+
+    assert plan is not None
+    command = list(plan.command)
+    deny_idx = _arg_triplet_index(command, "--ro-bind", str(outside), str(outside))
+    allow_idx = _arg_triplet_index(command, "--bind", str(outside), str(outside), start=deny_idx + 1)
+    assert allow_idx > deny_idx
+
+
 def test_firejail_plan_honors_approved_read_write_overrides(monkeypatch, tmp_path):
     from src import sandbox_runner
 
@@ -313,8 +386,54 @@ def test_firejail_plan_honors_approved_read_write_overrides(monkeypatch, tmp_pat
     assert f"--read-write={write_dir}" in command
 
 
+def test_firejail_plan_orders_operation_overrides_after_denies(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    outside = tmp_path / "outside-write"
+    outside.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {
+            "deny_read": [str(secret)],
+            "deny_write": [str(outside)],
+        },
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/firejail" if name == "firejail" else None)
+
+    plan = sandbox_runner._linux_firejail_plan(
+        ("echo", "hi"),
+        str(ws),
+        extra_allow_read=[str(secret)],
+        extra_allow_write=[str(outside)],
+    )
+
+    assert plan is not None
+    command = list(plan.command)
+    assert command.index(f"--blacklist={secret}") < command.index(f"--whitelist={secret}")
+    assert command.index(f"--read-only={outside}") < command.index(f"--read-write={outside}")
+
+
 def _has_arg_pair(command, option, value):
     return any(command[i : i + 2] == [option, value] for i in range(len(command) - 1))
+
+
+def _arg_pair_index(command, option, value, *, start=0):
+    for i in range(start, len(command) - 1):
+        if command[i : i + 2] == [option, value]:
+            return i
+    raise AssertionError(f"missing {option} {value} in {command}")
+
+
+def _arg_triplet_index(command, option, first, second, *, start=0):
+    for i in range(start, len(command) - 2):
+        if command[i : i + 3] == [option, first, second]:
+            return i
+    raise AssertionError(f"missing {option} {first} {second} in {command}")
 
 
 def test_sandbox_status_reports_disabled(monkeypatch, tmp_path):
