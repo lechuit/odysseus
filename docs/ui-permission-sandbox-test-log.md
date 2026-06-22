@@ -304,3 +304,15 @@ No pending macOS UI checks remain from this sandbox batch.
   - Added `tests/test_chat_route_strict_tool_parser.py`.
   - `tests/test_chat_route_strict_tool_parser.py tests/test_chat_route_tool_policy.py tests/test_agent_intent_followthrough.py tests/test_agent_loop.py tests/test_tool_policy.py`: 102 passed on macOS.
   - broader permission/sandbox/agent suite: 255 passed, 3 skipped on macOS.
+- Follow-up UI validation after fix:
+  - Marker: `UI_SANDBOX_MODE_CLEAN_B5B8FA8`
+  - Session: `1d4911dc-5487-4de2-946b-975ebaa368ea`
+  - Created a clean chat via the visible `+ New` composer button.
+  - Result: the UI executed exactly one `MANAGE_SETTINGS` call and returned:
+    - `sandbox_effective_mode`: `sandboxed`
+    - `sandbox_command_execution_blocked`: `false`
+    - `sandbox_fallback_unsandboxed`: `false`
+  - Logs:
+    - `Suppressing memory/RAG/skills for explicit single-tool turn: ['manage_settings']`
+    - round 1: `tools_sent=1 tool_names=['manage_settings']`
+    - round 2: `tools_sent=0 tool_names=[]`
