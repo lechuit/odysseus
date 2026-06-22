@@ -55,6 +55,34 @@ _LITERAL_TOOL_CONTROL_RE = re.compile(
     r"|(?:\b(?:cat|ls|pwd|grep|rg|find|python|bash)\s+/(?:tmp|Users|var|etc|private|opt)\b)",
     re.IGNORECASE | re.DOTALL,
 )
+_EXPLICIT_SINGLE_TOOL_CONTROL_RE = re.compile(
+    r"\b(?:ejecuta|ejecutar|invoca|invocar|llama|llamar|usa|usar|call|invoke|run|execute)\b"
+    r".{0,140}\b(?:herramienta|tool)\b\s+`?([a-zA-Z_][a-zA-Z0-9_]*(?:__[a-zA-Z0-9_]+)*)`?",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLICIT_SINGLE_TOOL_QUALIFIER_RE = re.compile(
+    r"\b(?:exactamente|exact[oa]s?|exactly|literal|solo|s[oó]lo|only)\b"
+    r"|(?:\b(?:no uses|sin usar|without using|do not use|don't use)\b.{0,80}\b(?:otras herramientas|other tools|tools)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLICIT_SINGLE_TOOL_NAMES = {
+    "bash",
+    "python",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "grep",
+    "glob",
+    "ls",
+    "get_workspace",
+    "web_fetch",
+    "web_search",
+    "manage_settings",
+    "manage_skills",
+    "manage_memory",
+    "update_plan",
+    "ask_user",
+}
 
 
 def _is_literal_tool_control_turn(message: str) -> bool:
@@ -109,6 +137,31 @@ def _literal_tool_control_relevant_tools(message: str) -> Optional[Set[str]]:
     tools.discard("manage_memory")
     tools.discard("manage_skills")
     return tools or {"bash"}
+
+
+def _explicit_single_tool_control_relevant_tools(message: str) -> Optional[Set[str]]:
+    """Return a strict allowlist for "execute exactly tool X" prompts.
+
+    This turns prompt-level phrasing such as "Ejecuta exactamente la herramienta
+    manage_settings ... no uses otras herramientas" into an actual schema
+    guardrail.  Without it, tool RAG can still include adjacent admin tools
+    (notably manage_skills), and small local models may wander after the first
+    successful tool call.
+    """
+
+    if not isinstance(message, str):
+        return None
+    text = message.strip()
+    if not _EXPLICIT_SINGLE_TOOL_QUALIFIER_RE.search(text):
+        return None
+    match = _EXPLICIT_SINGLE_TOOL_CONTROL_RE.search(text)
+    if not match:
+        return None
+    tool_name = (match.group(1) or "").strip()
+    normalized = tool_name.lower()
+    if normalized not in _EXPLICIT_SINGLE_TOOL_NAMES and not normalized.startswith("mcp__"):
+        return None
+    return {normalized}
 
 
 def _stream_set(session_id: str, **fields) -> None:
@@ -794,20 +847,30 @@ def setup_chat_routes(
             if literal_tool_control
             else None
         )
-        if permission_context_note or literal_tool_control:
+        explicit_tool_control_tools = _explicit_single_tool_control_relevant_tools(message)
+        strict_tool_control = bool(literal_tool_control or explicit_tool_control_tools)
+        strict_tool_control_tools = explicit_tool_control_tools or literal_tool_control_tools
+        if permission_context_note or strict_tool_control:
             # A permission label such as "Permitir una vez" is not a new task.
             # Do not run memory/RAG/skill preprocessing against that label; it
             # can pull unrelated context and make the resume feel like another
             # chat leaked in. Likewise, a literal tool-control prompt must not
-            # be rewritten by semantically similar recalled paths/commands. The
-            # system note + forced relevant_tools below carry permission-resume
-            # context when present.
+            # be rewritten by semantically similar recalled paths/commands.
+            # Explicit single-tool requests also need a real schema guardrail:
+            # prompt text saying "no other tools" is not reliable enough for
+            # small local models. The system note + forced relevant_tools below
+            # carry permission-resume context when present.
             allow_tool_preprocessing = False
             no_memory = True
             use_rag = "false"
             use_web = False
             if literal_tool_control and not permission_context_note:
                 logger.info("Suppressing memory/RAG/skills for literal tool-control turn")
+            if explicit_tool_control_tools and not permission_context_note:
+                logger.info(
+                    "Suppressing memory/RAG/skills for explicit single-tool turn: %s",
+                    sorted(explicit_tool_control_tools),
+                )
 
         # Build shared context (stream path uses enhanced_message for context preface)
         ctx = await build_chat_context(
@@ -1444,9 +1507,9 @@ def setup_chat_routes(
                         plan_mode=plan_mode,
                         approved_plan=approved_plan or None,
                         workspace=workspace or None,
-                        relevant_tools=permission_resume_tools or literal_tool_control_tools,
-                        suppress_local_context=bool(permission_context_note or literal_tool_control),
-                        strict_tool_turn=bool(literal_tool_control and not permission_context_note),
+                        relevant_tools=permission_resume_tools or strict_tool_control_tools,
+                        suppress_local_context=bool(permission_context_note or strict_tool_control),
+                        strict_tool_turn=bool(strict_tool_control and not permission_context_note),
                         permission_resume_operation=permission_resume_operation,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):

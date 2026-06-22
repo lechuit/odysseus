@@ -81,3 +81,24 @@ These should be run after the sandbox runner changes are installed locally and t
    - Try a Bash/Python network operation.
    - Expected: approval card appears; if approved, only that reviewed operation receives a network override.
 
+## Regression found during sandbox status UI check
+
+### `UI_SANDBOX_STATUS_2091`
+
+- Prompt asked the agent to execute exactly `manage_settings` with `{"action":"sandbox_status"}` and not use any other tools.
+- Actual behavior before fix:
+  - `manage_settings` executed successfully.
+  - The model then drifted into `manage_skills`.
+  - It created and published an unintended skill named `verify-sbx-validity`.
+- Root cause:
+  - Tool RAG classified the prompt into an adjacent admin/cookbook tool set and included `manage_skills`.
+  - The phrase "no uses otras herramientas" was only prompt text, not a deterministic schema guardrail.
+- Fix:
+  - Explicit single-tool prompts such as `Ejecuta exactamente la herramienta manage_settings ... no uses otras herramientas` now become strict tool turns.
+  - Only the named tool schema is exposed.
+  - After that tool executes, the final answer round receives zero tools.
+- Cleanup:
+  - Removed the generated local test artifact `data/skills/system/verify-sbx-validity/SKILL.md`.
+- Follow-up UI validation:
+  - Re-run this test after installing the fix locally.
+  - Expected result: one `MANAGE_SETTINGS done`, no `MANAGE_SKILLS`, and a concise sandbox status answer.

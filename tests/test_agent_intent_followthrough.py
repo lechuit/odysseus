@@ -211,3 +211,63 @@ def test_strict_tool_turn_forces_tool_free_answer_after_literal_tool(monkeypatch
     assert set(tool_schemas_by_round[0]) <= {"bash"}
     assert tool_schemas_by_round[1] == []
     assert any(event.get("delta") == "literal result acknowledged" for event in events)
+
+
+def test_strict_single_tool_turn_blocks_adjacent_admin_tools(monkeypatch):
+    """Exact manage_settings probes must not drift into manage_skills."""
+    streams = []
+    tool_schemas_by_round = []
+    executed = []
+
+    monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default, raising=False)
+    monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None, raising=False)
+    monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10, raising=False)
+
+    async def fake_stream(_candidates, messages, **kwargs):
+        round_index = len(streams)
+        streams.append(messages)
+        tool_schemas_by_round.append([
+            schema.get("function", {}).get("name")
+            for schema in (kwargs.get("tools") or [])
+        ])
+        if round_index == 0:
+            call = {
+                "name": "manage_settings",
+                "arguments": json.dumps({"action": "sandbox_status"}),
+            }
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
+        else:
+            yield f'data: {json.dumps({"delta": "enabled=false sandboxed=false backend=none"})}\n\n'
+            call = {
+                "name": "manage_skills",
+                "arguments": json.dumps({"action": "add", "name": "leaked-skill"}),
+            }
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake_execute(block, *args, **kwargs):
+        executed.append(block)
+        if block.tool_type == "manage_skills":
+            raise AssertionError("strict single-tool turn must not execute manage_skills")
+        return ("manage_settings", {"response": "Sandbox enabled=False, sandboxed=False", "exit_code": 0})
+
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream, raising=False)
+    monkeypatch.setattr(agent_loop, "execute_tool_block", fake_execute, raising=False)
+
+    chunks = _collect(
+        agent_loop.stream_agent_loop(
+            "https://api.openai.com/v1",
+            "gpt-4o",
+            [{"role": "user", "content": "Ejecuta exactamente la herramienta manage_settings. No uses otras herramientas."}],
+            relevant_tools={"manage_settings"},
+            strict_tool_turn=True,
+            max_rounds=3,
+            _is_teacher_run=True,
+        )
+    )
+    events = _events(chunks)
+
+    assert [block.tool_type for block in executed] == ["manage_settings"]
+    assert set(tool_schemas_by_round[0]) <= {"manage_settings"}
+    assert tool_schemas_by_round[1] == []
+    assert any("enabled=false" in event.get("delta", "") for event in events)

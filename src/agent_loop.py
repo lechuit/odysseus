@@ -2398,8 +2398,11 @@ async def stream_agent_loop(
         if (_round_limit_continue or _permission_resume_context) and not _looks_like_skill_request(_retrieval_query):
             _relevant_tools.discard("manage_skills")
         if strict_tool_turn:
-            _relevant_tools.discard("manage_skills")
-            _relevant_tools.discard("manage_memory")
+            _strict_requested_tools = set(relevant_tools or set())
+            if "manage_skills" not in _strict_requested_tools:
+                _relevant_tools.discard("manage_skills")
+            if "manage_memory" not in _strict_requested_tools:
+                _relevant_tools.discard("manage_memory")
         logger.info("[agent-intent] selected_tools=%s", sorted(_relevant_tools)[:50])
 
     prep_timings["tool_selection"] = time.time() - _t1
