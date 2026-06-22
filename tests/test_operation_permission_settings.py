@@ -163,6 +163,38 @@ def test_manage_settings_sandbox_status(tmp_path, monkeypatch):
     assert "Sandbox enabled=False" in result["response"]
 
 
+def test_manage_settings_sandbox_self_test(tmp_path, monkeypatch):
+    import src.settings as settings
+    from src import sandbox_runner
+    from src.tool_implementations import do_manage_settings
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "SETTINGS_FILE", str(settings_path))
+    settings._invalidate_caches()
+    monkeypatch.setattr(
+        sandbox_runner,
+        "sandbox_self_test",
+        lambda cwd=None: {
+            "overall_passed": True,
+            "skipped": False,
+            "passed_count": 5,
+            "total_count": 5,
+            "checks": [{"name": "workspace_write_allowed", "passed": True}],
+            "warnings": [],
+        },
+    )
+
+    result = asyncio.run(do_manage_settings(json.dumps({
+        "action": "sandbox_self_test",
+        "cwd": str(tmp_path),
+    })))
+
+    assert result["exit_code"] == 0
+    assert result["self_test"]["overall_passed"] is True
+    assert "Sandbox self-test passed=True" in result["response"]
+    assert "checks=5/5" in result["response"]
+
+
 def test_manage_settings_list_and_clear_session_permission_rules(tmp_path, monkeypatch):
     import src.settings as settings
     from src import operation_permissions as op

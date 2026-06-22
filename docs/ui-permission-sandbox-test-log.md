@@ -213,6 +213,27 @@ No pending macOS UI checks remain from this sandbox batch.
   - On Linux, run `manage_settings {"action":"sandbox_status"}` with `bubblewrap` installed and confirm `backend_runtime_ready=true`.
   - Repeat on a Linux host/container where `bubblewrap` is installed but user namespaces are unavailable and confirm the warning/error surfaces clearly.
 
+## Sandbox runtime self-test action
+
+- Date: 2026-06-22
+- Scope: code-level and macOS runtime validation; Linux runtime validation still pending.
+- Change validated:
+  - `manage_settings` now supports `{"action":"sandbox_self_test"}`;
+  - the self-test creates temporary sibling directories, runs controlled sandboxed commands, and cleans them up;
+  - it verifies:
+    - workspace writes are allowed;
+    - outside writes are denied without approval;
+    - protected reads such as workspace `.env` do not leak contents;
+    - operation-scoped outside write allowances work;
+    - operation-scoped protected read allowances work.
+- Safety behavior:
+  - if sandbox is disabled or no sandboxed backend is active, it skips enforcement commands instead of intentionally writing outside the workspace unsandboxed.
+- Validation run:
+  - `tests/test_sandbox_runner.py tests/test_operation_permission_settings.py`: 45 passed, 3 skipped on macOS.
+  - Manual macOS runtime self-test with temporary in-process sandbox settings: passed 5/5 on `sandbox-exec`.
+- Remaining real-host check:
+  - In the UI on a Linux host, run strict single-tool `manage_settings` with `{"action":"sandbox_self_test"}` and confirm `overall_passed=true`, `passed_count=5`, and `selected_backend` is `bubblewrap` or `firejail`.
+
 ### UI smoke after local install sync
 
 - Marker: `UI_SANDBOX_STATUS_7159FBE`

@@ -768,11 +768,11 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "manage_settings",
-            "description": "Manage user preferences and settings. Use `disable_tool`/`enable_tool`/`list_tools` to turn individual tools on or off globally. Also manages operation-level permission rules with list_permission_rules/add_permission_rule/delete_permission_rule/clear_permission_rules/list_session_permission_rules/clear_session_permission_rules/permission_metrics, plus sandbox_status/set_sandbox for the local OS sandbox.",
+            "description": "Manage user preferences and settings. Use `disable_tool`/`enable_tool`/`list_tools` to turn individual tools on or off globally. Also manages operation-level permission rules with list_permission_rules/add_permission_rule/delete_permission_rule/clear_permission_rules/list_session_permission_rules/clear_session_permission_rules/permission_metrics, plus sandbox_status/sandbox_self_test/set_sandbox for the local OS sandbox.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools", "list_permission_rules", "add_permission_rule", "delete_permission_rule", "clear_permission_rules", "list_session_permission_rules", "clear_session_permission_rules", "permission_metrics", "sandbox_status", "set_sandbox"]},
+                    "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools", "list_permission_rules", "add_permission_rule", "delete_permission_rule", "clear_permission_rules", "list_session_permission_rules", "clear_session_permission_rules", "permission_metrics", "sandbox_status", "sandbox_self_test", "set_sandbox"]},
                     "key": {"type": "string", "description": "Setting key (for get/set/delete)"},
                     "value": {"description": "Setting value (for set/set_sandbox) — can be string, number, boolean, or object. For set_sandbox use {\"enabled\": bool, \"fail_if_unavailable\": bool, \"network\": {\"deny\": bool}, \"filesystem\": {...}} or {\"preset\":\"strict_local\"}. Presets: off, local, network_deny, strict_local."},
                     "preset": {"type": "string", "enum": ["off", "local", "network_deny", "strict_local"], "description": "Sandbox preset for action='set_sandbox'."},

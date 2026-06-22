@@ -947,6 +947,77 @@ def sandbox_dependency_report(*, probe_runtime: bool = False) -> Dict[str, Any]:
     return report
 
 
+def _shell_path() -> str:
+    return shutil.which("sh") or "/bin/sh"
+
+
+def _cleanup_profile(plan: SandboxPlan) -> None:
+    if plan.backend == "sandbox-exec" and plan.reason:
+        try:
+            os.unlink(plan.reason)
+        except OSError:
+            pass
+
+
+def _run_sandbox_self_test_command(
+    command: Sequence[str],
+    *,
+    cwd: str,
+    extra_allow_read: Optional[Sequence[str]] = None,
+    extra_allow_write: Optional[Sequence[str]] = None,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    plan = build_sandbox_plan(
+        command,
+        cwd=cwd,
+        extra_allow_read=extra_allow_read or [],
+        extra_allow_write=extra_allow_write or [],
+    )
+    result: Dict[str, Any] = {
+        "ran": False,
+        "sandboxed": plan.sandboxed,
+        "backend": plan.backend,
+        "reason": plan.reason,
+        "exit_code": None,
+        "stdout": "",
+        "stderr": "",
+        "error": "",
+    }
+    try:
+        if not plan.sandboxed:
+            return result
+        completed = subprocess.run(
+            plan.command,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        result.update(
+            {
+                "ran": True,
+                "exit_code": completed.returncode,
+                "stdout": _probe_text(completed.stdout),
+                "stderr": _probe_text(completed.stderr),
+            }
+        )
+    except subprocess.TimeoutExpired as exc:
+        result.update(
+            {
+                "ran": True,
+                "exit_code": 124,
+                "stdout": _probe_text(exc.stdout),
+                "stderr": _probe_text(exc.stderr),
+                "error": f"timed out after {timeout:g}s",
+            }
+        )
+    except Exception as exc:
+        result.update({"ran": True, "exit_code": 126, "error": _probe_text(exc)})
+    finally:
+        _cleanup_profile(plan)
+    return result
+
+
 def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
     """Return a user/tool friendly sandbox readiness report."""
 
@@ -1018,5 +1089,191 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
             "deny_read_count": len(deny_read),
             "deny_write_count": len(deny_write),
         },
+        "warnings": warnings,
+    }
+
+
+def _self_test_parent_dir(cwd: str) -> str:
+    candidates = [os.path.dirname(_real(cwd)), os.path.expanduser("~")]
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            return candidate
+    return tempfile.gettempdir()
+
+
+def _read_file_if_exists(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def sandbox_self_test(*, cwd: Optional[str] = None) -> Dict[str, Any]:
+    """Run a small, controlled sandbox enforcement self-test.
+
+    The status probe proves that a backend can start.  This self-test proves the
+    policy shape: workspace writes should work, outside writes should not, and
+    operation-scoped approvals should pierce the sandbox narrowly.  Temporary
+    directories are created beside the active workspace and removed afterwards.
+    """
+
+    base_cwd = _real(cwd or os.getcwd())
+    status = sandbox_status(cwd=base_cwd)
+    checks: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+
+    if not status.get("enabled"):
+        return {
+            "overall_passed": False,
+            "skipped": True,
+            "skip_reason": "sandbox is disabled",
+            "status": status,
+            "checks": checks,
+            "warnings": ["sandbox is disabled; enable it before running enforcement self-tests"],
+        }
+    if not status.get("sandboxed"):
+        return {
+            "overall_passed": False,
+            "skipped": True,
+            "skip_reason": status.get("reason") or "sandbox is not active",
+            "status": status,
+            "checks": checks,
+            "warnings": ["sandbox is enabled but no sandboxed backend is active"],
+        }
+
+    parent = _self_test_parent_dir(base_cwd)
+    if os.path.realpath(parent) == os.path.realpath(tempfile.gettempdir()):
+        warnings.append(
+            "self-test temporary directories are under the system temp directory; "
+            "outside-write denial may be weaker if /tmp is allowed"
+        )
+    workspace = tempfile.mkdtemp(prefix=".odysseus-sandbox-selftest-ws-", dir=parent)
+    outside_dir = tempfile.mkdtemp(prefix=".odysseus-sandbox-selftest-outside-", dir=parent)
+    shell = _shell_path()
+
+    def _append_check(
+        name: str,
+        expected: str,
+        result: Mapping[str, Any],
+        passed: bool,
+        extra_observed: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        observed = {
+            "ran": result.get("ran"),
+            "sandboxed": result.get("sandboxed"),
+            "backend": result.get("backend"),
+            "exit_code": result.get("exit_code"),
+            "stdout": result.get("stdout"),
+            "stderr": result.get("stderr"),
+            "error": result.get("error"),
+        }
+        if extra_observed:
+            observed.update(extra_observed)
+        checks.append(
+            {
+                "name": name,
+                "passed": bool(passed),
+                "expected": expected,
+                "observed": observed,
+            }
+        )
+
+    try:
+        inside_file = os.path.join(workspace, "inside.txt")
+        inside_value = "sandbox-selftest-inside-ok"
+        result = _run_sandbox_self_test_command(
+            (shell, "-c", 'printf "%s" "$1" > "$2" && cat "$2"', "sh", inside_value, inside_file),
+            cwd=workspace,
+        )
+        _append_check(
+            "workspace_write_allowed",
+            "sandboxed command can write and read inside its workspace",
+            result,
+            bool(result.get("ran") and result.get("exit_code") == 0 and result.get("stdout") == inside_value),
+            {"file_content": _read_file_if_exists(inside_file)},
+        )
+
+        outside_file = os.path.join(outside_dir, "outside.txt")
+        outside_before = "sandbox-selftest-outside-before"
+        outside_denied_value = "sandbox-selftest-outside-denied"
+        with open(outside_file, "w", encoding="utf-8") as f:
+            f.write(outside_before)
+        result = _run_sandbox_self_test_command(
+            (shell, "-c", 'printf "%s" "$1" > "$2" && cat "$2"', "sh", outside_denied_value, outside_file),
+            cwd=workspace,
+        )
+        outside_after_denied = _read_file_if_exists(outside_file)
+        _append_check(
+            "outside_write_denied",
+            "sandboxed command cannot write outside the workspace without an approval allowance",
+            result,
+            bool(result.get("ran") and outside_after_denied == outside_before and outside_denied_value not in outside_after_denied),
+            {"file_content": outside_after_denied},
+        )
+
+        protected_file = os.path.join(workspace, ".env")
+        protected_secret = "sandbox-selftest-env-secret"
+        with open(protected_file, "w", encoding="utf-8") as f:
+            f.write(protected_secret)
+        result = _run_sandbox_self_test_command(
+            (shell, "-c", 'cat "$1"', "sh", protected_file),
+            cwd=workspace,
+        )
+        leaked_text = f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}"
+        _append_check(
+            "protected_read_no_leak",
+            "default protected files such as workspace .env do not leak content",
+            result,
+            bool(result.get("ran") and protected_secret not in leaked_text),
+        )
+
+        approved_outside_value = "sandbox-selftest-outside-approved"
+        result = _run_sandbox_self_test_command(
+            (shell, "-c", 'printf "%s" "$1" > "$2" && cat "$2"', "sh", approved_outside_value, outside_file),
+            cwd=workspace,
+            extra_allow_write=[outside_dir],
+        )
+        outside_after_approved = _read_file_if_exists(outside_file)
+        _append_check(
+            "approved_outside_write_allowed",
+            "operation-scoped write allowance permits the reviewed outside directory",
+            result,
+            bool(
+                result.get("ran")
+                and result.get("exit_code") == 0
+                and result.get("stdout") == approved_outside_value
+                and outside_after_approved == approved_outside_value
+            ),
+            {"file_content": outside_after_approved},
+        )
+
+        result = _run_sandbox_self_test_command(
+            (shell, "-c", 'cat "$1"', "sh", protected_file),
+            cwd=workspace,
+            extra_allow_read=[protected_file],
+        )
+        _append_check(
+            "approved_protected_read_allowed",
+            "operation-scoped read allowance permits the reviewed protected file",
+            result,
+            bool(result.get("ran") and result.get("exit_code") == 0 and result.get("stdout") == protected_secret),
+        )
+    finally:
+        for path in (workspace, outside_dir):
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                warnings.append(f"failed to clean self-test directory {path}: {exc}")
+
+    passed_count = sum(1 for check in checks if check.get("passed"))
+    overall_passed = bool(checks and passed_count == len(checks))
+    return {
+        "overall_passed": overall_passed,
+        "skipped": False,
+        "status": status,
+        "checks": checks,
+        "passed_count": passed_count,
+        "total_count": len(checks),
         "warnings": warnings,
     }

@@ -1130,8 +1130,13 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                 return {"response": f"Set {key} = {value} (endpoint {s.get(f'{key[:-6]}_endpoint_id')}).", "exit_code": 0}
             return {"response": f"Set {key} = {value}.", "exit_code": 0}
 
-        elif action in ("sandbox_status", "set_sandbox"):
-            from src.sandbox_runner import normalize_sandbox_settings, sandbox_preset_settings, sandbox_status
+        elif action in ("sandbox_status", "sandbox_self_test", "set_sandbox"):
+            from src.sandbox_runner import (
+                normalize_sandbox_settings,
+                sandbox_preset_settings,
+                sandbox_self_test,
+                sandbox_status,
+            )
 
             if action == "sandbox_status":
                 status = sandbox_status(cwd=args.get("cwd") or None)
@@ -1149,6 +1154,24 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                 if warnings:
                     response += "\nWarnings: " + "; ".join(str(w) for w in warnings)
                 return {"response": response, "sandbox": status, "exit_code": 0}
+
+            if action == "sandbox_self_test":
+                self_test = sandbox_self_test(cwd=args.get("cwd") or None)
+                checks = self_test.get("checks") or []
+                failed = [str(check.get("name")) for check in checks if not check.get("passed")]
+                response = (
+                    f"Sandbox self-test passed={self_test.get('overall_passed')}, "
+                    f"skipped={self_test.get('skipped', False)}, "
+                    f"checks={self_test.get('passed_count', 0)}/{self_test.get('total_count', len(checks))}."
+                )
+                if self_test.get("skip_reason"):
+                    response += f" Reason: {self_test.get('skip_reason')}."
+                if failed:
+                    response += " Failed checks: " + ", ".join(failed) + "."
+                warnings = self_test.get("warnings") or []
+                if warnings:
+                    response += "\nWarnings: " + "; ".join(str(w) for w in warnings)
+                return {"response": response, "self_test": self_test, "exit_code": 0}
 
             s = load_settings()
             current = s.get("operation_permissions_sandbox", DEFAULT_SETTINGS["operation_permissions_sandbox"])

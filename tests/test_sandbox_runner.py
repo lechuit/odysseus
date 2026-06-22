@@ -946,3 +946,119 @@ def test_sandbox_status_reports_runnable_linux_backend(monkeypatch, tmp_path):
     assert status["selected_backend"] == "bubblewrap"
     assert status["backend_runtime_ready"] is True
     assert status["effective_mode"] == "sandboxed"
+
+
+def test_sandbox_self_test_skips_when_disabled(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    monkeypatch.setattr(
+        sandbox_runner,
+        "sandbox_status",
+        lambda cwd=None: {
+            "enabled": False,
+            "sandboxed": False,
+            "reason": "sandbox disabled",
+            "warnings": [],
+        },
+    )
+
+    result = sandbox_runner.sandbox_self_test(cwd=str(tmp_path))
+
+    assert result["overall_passed"] is False
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "sandbox is disabled"
+    assert result["checks"] == []
+
+
+def test_sandbox_self_test_passes_with_expected_enforcement(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    active = tmp_path / "active"
+    active.mkdir()
+    monkeypatch.setattr(
+        sandbox_runner,
+        "sandbox_status",
+        lambda cwd=None: {
+            "enabled": True,
+            "sandboxed": True,
+            "selected_backend": "fake-sandbox",
+            "reason": "",
+            "warnings": [],
+        },
+    )
+
+    def fake_run(command, *, cwd, extra_allow_read=None, extra_allow_write=None, timeout=10.0):
+        extra_allow_read = [os.path.realpath(p) for p in (extra_allow_read or [])]
+        extra_allow_write = [os.path.realpath(p) for p in (extra_allow_write or [])]
+        script = command[2]
+        if "printf" in script:
+            value = command[4]
+            path = command[5]
+            path_real = os.path.realpath(path)
+            allowed_write = path_real.startswith(os.path.realpath(cwd) + os.sep) or any(
+                path_real == allowed or path_real.startswith(allowed + os.sep)
+                for allowed in extra_allow_write
+            )
+            if not allowed_write:
+                return {
+                    "ran": True,
+                    "sandboxed": True,
+                    "backend": "fake-sandbox",
+                    "exit_code": 1,
+                    "stdout": "",
+                    "stderr": "permission denied",
+                    "error": "",
+                }
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(value)
+            return {
+                "ran": True,
+                "sandboxed": True,
+                "backend": "fake-sandbox",
+                "exit_code": 0,
+                "stdout": value,
+                "stderr": "",
+                "error": "",
+            }
+        if "cat" in script:
+            path = command[4]
+            path_real = os.path.realpath(path)
+            protected = os.path.basename(path_real) == ".env"
+            allowed_read = any(path_real == allowed for allowed in extra_allow_read)
+            if protected and not allowed_read:
+                return {
+                    "ran": True,
+                    "sandboxed": True,
+                    "backend": "fake-sandbox",
+                    "exit_code": 1,
+                    "stdout": "",
+                    "stderr": "permission denied",
+                    "error": "",
+                }
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return {
+                "ran": True,
+                "sandboxed": True,
+                "backend": "fake-sandbox",
+                "exit_code": 0,
+                "stdout": content,
+                "stderr": "",
+                "error": "",
+            }
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(sandbox_runner, "_run_sandbox_self_test_command", fake_run)
+
+    result = sandbox_runner.sandbox_self_test(cwd=str(active))
+
+    assert result["skipped"] is False
+    assert result["overall_passed"] is True
+    assert result["passed_count"] == result["total_count"] == 5
+    assert {check["name"] for check in result["checks"]} == {
+        "workspace_write_allowed",
+        "outside_write_denied",
+        "protected_read_no_leak",
+        "approved_outside_write_allowed",
+        "approved_protected_read_allowed",
+    }
