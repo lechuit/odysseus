@@ -25,6 +25,7 @@ from src.session_search import search_session_messages
 from src.prompt_security import untrusted_context_message
 from core.exceptions import SessionNotFoundError
 from src.auth_helpers import get_current_user
+from src.memory_policy import should_expose_manage_memory_tool
 from routes.session_routes import _verify_session_owner
 from routes.document_helpers import _owner_session_filter
 from core.database import SessionLocal, get_session_mode, set_session_mode
@@ -1065,6 +1066,18 @@ def setup_chat_routes(
         ):
             disabled_tools.add("web_search")
             disabled_tools.add("web_fetch")
+
+        _explicit_memory_tool = "manage_memory" in (permission_resume_tools or set()) or (
+            strict_tool_control_tools is not None and "manage_memory" in strict_tool_control_tools
+        )
+        if not _explicit_memory_tool and not should_expose_manage_memory_tool(
+            ctx.uprefs,
+            message,
+            incognito=incognito,
+            no_memory=no_memory,
+            allow_tool_preprocessing=allow_tool_preprocessing,
+        ):
+            disabled_tools.add("manage_memory")
 
         # Nobody/incognito mode: deny tools that would expose the user's
         # persistent memory, past chats, or other identity-linked data.

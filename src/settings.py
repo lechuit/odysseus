@@ -214,9 +214,9 @@ DEFAULT_FEATURES = {
     "web_search": True,
     "web_fetch": True,
     "deep_research": False,
-    "memory": True,
+    "memory": False,
     "document_editor": True,
-    "rag": True,
+    "rag": False,
     "sensitive_filter": True,
     "gallery": True,
 }

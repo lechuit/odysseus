@@ -90,6 +90,10 @@ _ROUTING_PATTERNS: tuple[tuple[str, str, Pattern[str]], ...] = tuple(
         ("ui", "open/show panel request", rf"{_PLEASE}(?:open|show|bring\s+up)\s+(?:me\s+)?(?:my\s+|the\s+)?{_PANEL}\b"),
         ("ui", "tool or feature toggle request", r"\b(?:disable|enable|turn\s+(?:on|off))\s+(?:the\s+)?(?:shell|search|web|browser|documents?|memory|skills|images?|calendar|email|mail|research|incognito)\b"),
 
+        # Explicit memory management. Keep this narrow so statements like
+        # "my name is X" remain ordinary chat unless the user asks to save it.
+        ("memory", "explicit memory management request", r"\b(?:remember\s+(?:this|that|it|me|to|the following)|save\s+(?:this|that|it)\s+(?:to|in|as)\s+memor(?:y|ies)|forget\s+(?:this|that|it|memor(?:y|ies)|what\s+you\s+remember)|what\s+do\s+you\s+remember|(?:list|show|search|delete|update|edit)\s+(?:my\s+|the\s+)?memor(?:y|ies)|recuerda(?:me)?\s+(?:esto|eso|que|lo\s+siguiente)|guarda\s+(?:esto|eso|lo\s+siguiente).{0,40}\bmemoria(?:s)?|olvida\s+(?:esto|eso|memoria(?:s)?|lo\s+que\s+recuerdas)|(?:lista|muestra|busca|borra|actualiza|edita)\s+(?:mi\s+|la\s+|las\s+)?memoria(?:s)?|qu[eé]\s+recuerdas)\b"),
+
         # Deep research jobs, not quick conceptual mentions of research.
         ("web", "explicit web search request", rf"{_PLEASE}(?:do|run|use|perform|make)\s+(?:a\s+)?(?:web\s+search|search\s+the\s+web)\b.+"),
         ("web", "web lookup imperative request", rf"{_PLEASE}(?:web\s+search|search\s+the\s+web|search\s+online|look\s+up|google)\b.+"),

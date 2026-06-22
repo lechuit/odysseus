@@ -824,8 +824,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
       fd.append('allow_bash', el('bash-toggle').checked ? 'true' : 'false');
       const ragChk = el('rag-toggle');
-      if (ragChk && !ragChk.checked) {
-        fd.append('use_rag', 'false');
+      if (ragChk) {
+        fd.append('use_rag', ragChk.checked ? 'true' : 'false');
       }
       const incognitoChk = el('incognito-toggle');
       if (incognitoChk && incognitoChk.checked) {

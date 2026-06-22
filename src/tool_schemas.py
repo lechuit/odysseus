@@ -382,7 +382,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "manage_memory",
-            "description": "Manage the user's memory system: list, add, edit, delete, or search memories. Memories persist across sessions.",
+            "description": "Explicitly manage persistent memories: list, add, edit, delete, or search only when the user asks to remember/save/update/forget/search/list memories or asks what you remember. Do not silently save ordinary task details, code discoveries, file paths, debug recipes, git history, temporary plans, secrets, or contact details. Treat recalled memories as hints and verify current files/functions/flags/dates/project state before relying on them.",
             "parameters": {
                 "type": "object",
                 "properties": {

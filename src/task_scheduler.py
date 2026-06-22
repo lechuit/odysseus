@@ -1381,6 +1381,14 @@ class TaskScheduler:
                     disabled_tools = all_tools - set(enabled)
             except Exception:
                 pass
+        try:
+            from src.memory_policy import explicit_memory_requested
+            if not explicit_memory_requested(task.prompt or ""):
+                disabled_tools = set(disabled_tools or set())
+                disabled_tools.add("manage_memory")
+        except Exception:
+            disabled_tools = set(disabled_tools or set())
+            disabled_tools.add("manage_memory")
 
         # RAG-select relevant tools for this prompt + always-available assistant tools.
         # Without this, all 40+ tools get sent and models hit their tool limit.
@@ -2235,7 +2243,7 @@ class TaskScheduler:
                 "CONTEXT GATHERING (before any response involving a specific person):\n"
                 "1. resolve_contact if you only have a name and need their email\n"
                 "2. search_chats for recent conversations mentioning them or their topic\n"
-                "3. manage_memory to check stored facts about them\n"
+                "3. If the task explicitly asks to use memory, manage_memory may search stored facts\n"
                 "Skip steps you already have answers for. Don't search for the user themselves.\n\n"
 
                 "EMAIL HANDLING:\n"
@@ -2248,9 +2256,8 @@ class TaskScheduler:
 
                 "ESCALATION LADDER (when you need info you don't have):\n"
                 "1. search_chats (fast, free)\n"
-                "2. manage_memory (fast, free)\n"
-                "3. web_search (medium cost)\n"
-                "4. trigger_research (expensive, async — only for complex multi-source questions)\n"
+                "2. web_search (medium cost)\n"
+                "3. trigger_research (expensive, async — only for complex multi-source questions)\n"
                 "Stop as soon as you have a sufficient answer.\n\n"
 
                 "'SEND TO [NAME]' FLOW:\n"
@@ -2259,15 +2266,10 @@ class TaskScheduler:
                 "3. Draft the email in a document (create_document with language='email')\n"
                 "4. Tell the user to review — NEVER auto-send\n\n"
 
-                "SELF-IMPROVEMENT — use manage_memory constantly:\n"
-                "- When the user corrects you, IMMEDIATELY store the correction as a memory.\n"
-                "- After every check-in or task, store new facts you learned (contacts, preferences, patterns).\n"
-                "- Before responding about a person or topic, search_chats and manage_memory FIRST.\n"
-                "- Build knowledge over time: who people are, what projects are active, how the user likes things done.\n"
-                "- If something failed or you got corrected, store WHY so you never repeat it.\n"
-                "- When you figure out a multi-step workflow that works, save it as a SKILL using manage_skills.\n"
-                "  A skill is a reusable procedure. Next time, recall the skill instead of figuring it out again.\n"
-                "- Before starting a complex task, check manage_skills for an existing procedure.\n\n"
+                "MEMORY/SKILLS RULE:\n"
+                "- Do not silently create memories or skills from scheduled tasks.\n"
+                "- Use manage_memory only if the scheduled task explicitly asks to list/search/update memory.\n"
+                "- Treat recalled memory as a stale hint and verify current files, dates, people, and project state before relying on it.\n\n"
 
                 "AUTONOMY RULES:\n"
                 "- Auto-add calendar events from clear meeting invitations (mention what you added)\n"

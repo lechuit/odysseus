@@ -15,6 +15,11 @@ from src.llm_core import normalize_model_id
 from src.endpoint_resolver import normalize_base
 from src.context_compactor import maybe_compact, trim_for_context
 from src.auth_helpers import get_current_user
+from src.memory_policy import (
+    auto_memory_enabled_from_prefs,
+    memory_enabled_from_prefs,
+    rag_enabled_from_request_and_prefs,
+)
 from src.prompt_security import untrusted_context_message
 from routes.prefs_routes import _load_for_user as load_prefs_for_user
 
@@ -580,13 +585,22 @@ async def build_chat_context(
     user = get_current_user(request)
     uprefs = load_prefs_for_user(user)
 
-    # Memory enabled?
-    mem_enabled = not incognito and not no_memory and uprefs.get("memory_enabled", True)
+    is_research_spinoff = _session_is_research_spinoff(sess)
+
+    # Memory is opt-in.  Missing prefs must mean "off", otherwise a fresh
+    # install can silently inject cross-chat context before the user has made a
+    # choice in the UI.
+    mem_enabled = memory_enabled_from_prefs(
+        uprefs,
+        incognito=incognito,
+        no_memory=no_memory,
+        allow_tool_preprocessing=allow_tool_preprocessing,
+        is_research_spinoff=is_research_spinoff,
+    )
     # Skills injection respects its own enable toggle (mirrors memory_enabled).
     # When off, the "Available skills" index is not added to the prompt.
     skills_enabled = not incognito and uprefs.get("skills_enabled", True)
     if not allow_tool_preprocessing:
-        mem_enabled = False
         skills_enabled = False
     logger.debug(
         "Memory enabled=%s for user=%s (incognito=%s, no_memory=%s, pref=%s)",
@@ -597,14 +611,16 @@ async def build_chat_context(
     # the primer system message IS the knowledge base. Injecting global memory
     # or personal-doc RAG on every turn pulls in keyword-matched but off-topic
     # facts ("wrong data") and competes with the report, so suppress both here.
-    is_research_spinoff = _session_is_research_spinoff(sess)
-    if is_research_spinoff:
-        mem_enabled = False
-
-    # Use RAG?
-    use_rag_val = (str(use_rag).lower() != "false") if use_rag is not None else True
-    if incognito or not allow_tool_preprocessing or is_research_spinoff:
-        use_rag_val = False
+    # Personal-document RAG is also opt-in.  The caller may explicitly send
+    # use_rag=true for a turn, otherwise we honor a persisted pref if one
+    # exists.  Missing prefs stay off.
+    use_rag_val = rag_enabled_from_request_and_prefs(
+        use_rag,
+        uprefs,
+        incognito=incognito,
+        allow_tool_preprocessing=allow_tool_preprocessing,
+        is_research_spinoff=is_research_spinoff,
+    )
 
     # If pre-fetched search context was provided (compare mode), skip live web search
     skip_web = bool(search_context) or not allow_tool_preprocessing
@@ -625,9 +641,8 @@ async def build_chat_context(
         agent_mode=agent_mode,
         incognito=incognito,
         use_skills=skills_enabled,
+        use_rag=use_rag_val,
     )
-    if use_rag is not None or is_research_spinoff:
-        _preface_kwargs["use_rag"] = use_rag_val
     preface, rag_sources, web_sources = chat_processor.build_context_preface(**_preface_kwargs)
 
     # Capture used memories immediately
@@ -1059,7 +1074,12 @@ def run_post_response_tasks(
     # Memory extraction — only every 4th message pair to avoid excess LLM calls
     _msg_count = len(sess.history) if hasattr(sess, 'history') else 0
     _should_extract = (_msg_count >= 4) and (_msg_count % 4 == 0)
-    if allow_background_extraction and not incognito and not compare_mode and _should_extract and uprefs.get("auto_memory", True):
+    if _should_extract and auto_memory_enabled_from_prefs(
+        uprefs,
+        incognito=incognito,
+        compare_mode=compare_mode,
+        allow_background_extraction=allow_background_extraction,
+    ):
         from services.memory.memory_extractor import extract_and_store
         from src.task_endpoint import resolve_task_endpoint
         t_url, t_model, t_headers = resolve_task_endpoint(

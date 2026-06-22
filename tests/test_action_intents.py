@@ -56,6 +56,15 @@ def test_explicit_web_search_promotes_to_agent():
     assert classify_tool_intent("use web search and find a recipe").category == "web"
 
 
+def test_explicit_memory_management_promotes_but_plain_facts_do_not():
+    intent = classify_tool_intent("recuerda esto: prefiero respuestas cortas")
+    assert intent.needs_tools
+    assert intent.category == "memory"
+    assert not message_needs_tools("mi nombre es Gabriel")
+    assert not message_needs_tools("sin usar memoria ni documentos recuperados")
+    assert not message_needs_tools("guarda esto en un archivo")
+
+
 def test_explanatory_calendar_questions_stay_plain_chat():
     assert not message_needs_tools("How do I add an entry to my calendar?")
     assert not message_needs_tools("What about the built-in Odysseus calendar, is that linked to email?")
