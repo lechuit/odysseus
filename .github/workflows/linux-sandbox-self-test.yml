@@ -57,8 +57,8 @@ jobs:
       - name: Run sandbox enforcement self-test
         run: python scripts/sandbox_self_test.py --preset strict_local --pretty --fail-on-fail
 
-      - name: Install focused test dependency
-        run: python -m pip install pytest
+      - name: Install focused test dependencies
+        run: python -m pip install pytest SQLAlchemy
 
       - name: Run focused Linux sandbox tests
         run: |
