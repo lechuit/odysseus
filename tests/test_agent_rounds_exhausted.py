@@ -87,6 +87,14 @@ def test_no_rounds_exhausted_on_normal_finish(monkeypatch):
     # A plain answer (no tool block) -> done-break on round 1 -> no event.
     events = _run_loop(monkeypatch, "All done, here is your answer.", max_rounds=2)
     assert not any(e.get("type") == "rounds_exhausted" for e in events), events
+    assert any(
+        e.get("type") == "agent_state" and e.get("state") == "thinking" and e.get("round") == 1
+        for e in events
+    )
+    assert any(
+        e.get("type") == "agent_state" and e.get("state") == "done"
+        for e in events
+    )
 
 
 def test_round_limit_continue_inherits_previous_user_turn():

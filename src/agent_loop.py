@@ -1710,6 +1710,16 @@ def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num
     """Choose native function calls or fenced code block parsing. Returns (tool_blocks, used_native)."""
     used_native = False
     if native_tool_calls:
+        before = len(native_tool_calls)
+        native_tool_calls = [tc for tc in native_tool_calls if isinstance(tc, dict)]
+        dropped = before - len(native_tool_calls)
+        if dropped:
+            logger.warning(
+                "Agent round %s: dropped %s malformed native tool call(s)",
+                round_num,
+                dropped,
+            )
+    if native_tool_calls:
         tool_blocks = []
         for tc in native_tool_calls:
             tc_name = tc.get("name", "")
@@ -2090,6 +2100,22 @@ def _empty_response_fallback(
         return round_reasoning, None
     _error_msg = "The model returned an empty response. Please try again or switch to a different model."
     return _error_msg, f'data: {json.dumps({"delta": _error_msg})}\n\n'
+
+
+def _agent_state_chunk(state: str, round_num: Optional[int] = None, **extra) -> str:
+    """Build a lightweight SSE state event for loop observability.
+
+    Existing frontends safely ignore unknown event types.  Keeping this as a
+    single helper makes it cheap to add states without coupling the loop to a
+    visual implementation.
+    """
+    payload = {"type": "agent_state", "state": state}
+    if round_num is not None:
+        payload["round"] = round_num
+    for key, value in extra.items():
+        if value is not None:
+            payload[key] = value
+    return f"data: {json.dumps(payload)}\n\n"
 
 
 PLAN_MODE_DIRECTIVE = (
@@ -2621,6 +2647,12 @@ async def stream_agent_loop(
     requested_model = model
     actual_model = model
     total_tool_calls = 0  # for budget enforcement
+    agent_state_counts: collections.Counter = collections.Counter()
+    agent_loop_status = "running"
+
+    def _state(state: str, round_num: Optional[int] = None, **extra) -> str:
+        agent_state_counts[state] += 1
+        return _agent_state_chunk(state, round_num, **extra)
 
     # Loop-breaker state. Small models (e.g. deepseek-v4-flash) can get
     # stuck firing the same tool call over and over with no text — burns
@@ -2716,6 +2748,7 @@ async def stream_agent_loop(
                     "[operation-permissions] deterministic replay of approved %s",
                     block.tool_type,
                 )
+                yield _state("tool_running", 1, tool=block.tool_type, phase="permission_replay")
                 yield (
                     f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": 1})}\n\n'
                 )
@@ -2747,6 +2780,13 @@ async def stream_agent_loop(
                         f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": 1, **evt})}\n\n'
                     )
                 desc, result = await _tool_task
+                yield _state(
+                    "tool_done",
+                    1,
+                    tool=block.tool_type,
+                    exit_code=result.get("exit_code"),
+                    phase="permission_replay",
+                )
 
             output_text = _tool_output_text_for_event(
                 block.tool_type,
@@ -2788,6 +2828,7 @@ async def stream_agent_loop(
             })
             _permission_resume_tool_replayed = True
             _force_answer = True
+            yield _state("resuming", 2, reason="permission_replay")
             yield f'data: {json.dumps({"type": "agent_step", "round": 2})}\n\n'
 
     # Document streaming state (persists across rounds)
@@ -2801,6 +2842,7 @@ async def stream_agent_loop(
     _exhausted_rounds = False
 
     for round_num in range(1, max_rounds + 1):
+        yield _state("thinking", round_num, force_answer=bool(_force_answer))
         if round_num > 1 and _agent_input_budget > 0:
             try:
                 _round_before_tokens = estimate_tokens(messages)
@@ -2896,6 +2938,7 @@ async def stream_agent_loop(
         # complementary cap for the rare stream that trickles bytes forever and
         # so never trips the inactivity timeout. Generous — only catches runaway.
         _round_deadline = time.time() + max(agent_stream_timeout * 4, 1200)
+        _round_timed_out = False
         async for chunk in stream_llm_with_fallback(
             _candidates,
             messages,
@@ -2908,6 +2951,12 @@ async def stream_agent_loop(
         ):
             if time.time() > _round_deadline:
                 logger.warning(f"[agent] round {round_num} stream exceeded wall-clock deadline; cutting off")
+                _round_timed_out = True
+                yield _state(
+                    "stream_timeout",
+                    round_num,
+                    timeout_seconds=agent_stream_timeout,
+                )
                 break
             # Forward error events from stream_llm to the frontend
             if chunk.startswith("event: error"):
@@ -3071,6 +3120,17 @@ async def stream_agent_loop(
                 # Forward error events to frontend as visible text
                 yield chunk
             # Intercept [DONE] — don't forward until all rounds finish
+
+        if _round_timed_out and not round_response.strip() and not native_tool_calls:
+            agent_loop_status = "stream_timeout"
+            _msg = (
+                "The model stream timed out before producing a usable response. "
+                "Please try again or switch to a different model."
+            )
+            logger.warning("[agent] round %s timed out with no response/tool calls", round_num)
+            yield f'data: {json.dumps({"delta": _msg})}\n\n'
+            full_response += _msg
+            break
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num, is_api_model=_is_api_model)
         if strict_tool_turn and _relevant_tools is not None and tool_blocks:
@@ -3392,7 +3452,15 @@ async def stream_agent_loop(
                     "blocked": True,
                 }
                 logger.info("Tool blocked before start by policy: %s", block.tool_type)
+                yield _state(
+                    "tool_done",
+                    round_num,
+                    tool=block.tool_type,
+                    exit_code=result.get("exit_code"),
+                    blocked=True,
+                )
             else:
+                yield _state("tool_running", round_num, tool=block.tool_type)
                 yield (
                     f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": round_num})}\n\n'
                 )
@@ -3432,6 +3500,12 @@ async def stream_agent_loop(
                         f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
                     )
                 desc, result = await _tool_task
+                yield _state(
+                    "tool_done",
+                    round_num,
+                    tool=block.tool_type,
+                    exit_code=result.get("exit_code"),
+                )
 
             # A skill the model just loaded can prescribe tools that weren't
             # RAG-selected this turn (declared via requires_toolsets in its
@@ -3715,6 +3789,13 @@ async def stream_agent_loop(
 
         # If budget was hit, stop the loop
         if budget_hit:
+            agent_loop_status = "budget_exceeded"
+            yield _state(
+                "budget_exceeded",
+                round_num,
+                limit=max_tool_calls,
+                used=total_tool_calls,
+            )
             break
 
         # ask_user posed a question — stop here and wait for the user's choice.
@@ -3722,6 +3803,8 @@ async def stream_agent_loop(
         # arrives as the next message and the agent resumes from there. The
         # question text is already in the streamed response, so it persists.
         if _awaiting_user:
+            agent_loop_status = "waiting_user"
+            yield _state("waiting_user", round_num, tool="ask_user")
             break
 
         # Feed results back to LLM for next round
@@ -3768,12 +3851,14 @@ async def stream_agent_loop(
     # If the loop hit the round cap while still working, tell the client so it
     # can show a "Continue" affordance instead of the turn just stopping.
     if _exhausted_rounds:
+        agent_loop_status = "rounds_exhausted"
         logger.info("[agent] round cap (%d) reached mid-task — emitting rounds_exhausted", max_rounds)
         continue_prompt = _build_round_limit_continue_prompt(
             _retrieval_query,
             workspace,
             _relevant_tools,
         )
+        yield _state("rounds_exhausted", max_rounds)
         yield f'data: {json.dumps({"type": "rounds_exhausted", "rounds": max_rounds, "continue_prompt": continue_prompt})}\n\n'
 
     # If the response is completely empty and no tools were executed,
@@ -3783,8 +3868,13 @@ async def stream_agent_loop(
     )
     if _fallback_chunk:
         yield _fallback_chunk
+        if agent_loop_status == "running":
+            agent_loop_status = "empty_response"
 
     # --- Final metrics ---
+    if agent_loop_status == "running":
+        agent_loop_status = "done"
+    yield _state(agent_loop_status)
     total_duration = time.time() - total_start
     metrics = _compute_final_metrics(
         messages, full_response, total_duration, time_to_first_token,
@@ -3796,6 +3886,9 @@ async def stream_agent_loop(
         backend_prefill_tps=backend_prefill_tps,
     )
     metrics["requested_model"] = requested_model
+    metrics["agent_loop_status"] = agent_loop_status
+    if agent_state_counts:
+        metrics["agent_state_counts"] = dict(agent_state_counts)
     if _microcompact_totals.get("passes", 0) > 0:
         metrics["microcompaction"] = {
             key: value for key, value in _microcompact_totals.items()

@@ -199,6 +199,18 @@ def test_resolve_tool_blocks_native_path_untouched_when_native_calls_present():
     assert blocks[0].tool_type == "bash"
 
 
+def test_resolve_tool_blocks_drops_malformed_native_calls():
+    native_calls = [
+        None,
+        "not-a-call",
+        {"name": "bash", "arguments": json.dumps({"command": "echo hi"})},
+    ]
+    blocks, used_native = al._resolve_tool_blocks("some prose", native_calls, round_num=1, is_api_model=True)
+    assert used_native is True
+    assert len(blocks) == 1
+    assert blocks[0].tool_type == "bash"
+
+
 # ---------------------------------------------------------------------------
 # Booyaka101's review on #3356: short-circuiting the *whole* parser for native
 # models (`tool_blocks = [] if is_api_model else parse_tool_blocks(...)`) also
