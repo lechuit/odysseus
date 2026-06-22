@@ -664,9 +664,9 @@ def test_firejail_plan_honors_approved_read_write_overrides(monkeypatch, tmp_pat
     assert plan is not None
     command = list(plan.command)
     assert "--net=none" in command
-    assert "--private" in command
     assert f"--whitelist={ws}" in command
     assert f"--read-write={ws}" in command
+    assert f"--read-only={tmp_path}" in command
     assert f"--whitelist={outside}" in command
     assert f"--whitelist={write_dir}" in command
     assert f"--read-write={write_dir}" in command

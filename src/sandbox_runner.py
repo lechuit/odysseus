@@ -782,13 +782,16 @@ def _linux_firejail_plan(
     # reflect the same precedence contract as macOS and bubblewrap.
     extra_read = _unique_real([*_filesystem_setting_paths("allow_read"), *_extra_paths(extra_allow_read)])
     extra_write = _extra_paths(extra_allow_write)
-    # Use a private home and explicitly whitelist the active workspace instead
-    # of ``--private=<cwd>``.  The latter remaps the workspace to $HOME and
-    # makes the original absolute path disappear, which breaks normal tool
-    # commands and operation-scoped approved absolute paths.
-    args_list = [firejail, "--quiet", "--private", "--noprofile"]
+    # Keep absolute paths visible.  ``--private``/``--private=<cwd>`` hide or
+    # remap $HOME, which breaks normal tool commands that pass reviewed absolute
+    # paths.  Instead, make the workspace parent read-only and reopen the
+    # active workspace plus operation-approved write targets below.
+    args_list = [firejail, "--quiet", "--noprofile"]
     if _network_denied() and not extra_allow_network:
         args_list.append("--net=none")
+    write_boundary = os.path.dirname(cwd.rstrip(os.sep)) or "/"
+    if write_boundary != "/" and os.path.exists(write_boundary):
+        args_list.append(f"--read-only={write_boundary}")
     writable = set(allow_write)
     for path in allow_read:
         if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
