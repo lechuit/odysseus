@@ -1590,8 +1590,13 @@ def _build_base_prompt(
         # drop manage_memory for clear contact-save patterns). Unioning
         # ALWAYS_AVAILABLE back in here used to silently undo those
         # drops. Only force-include the irreducible loop primitives
-        # (ask_user, update_plan) as belt-and-suspenders.
-        tool_names = set(relevant_tools) | {"ask_user", "update_plan"}
+        # (ask_user, update_plan) as belt-and-suspenders on ordinary turns.
+        # Permission-resume turns pass suppress_local_context=True and must be
+        # surgical: replay the approved operation, then answer. Extra loop
+        # tools gave small local models room to drift into unrelated tasks.
+        tool_names = set(relevant_tools)
+        if not suppress_local_context:
+            tool_names |= {"ask_user", "update_plan"}
         if needs_admin:
             tool_names |= _ADMIN_TOOLS
         agent_prompt = _assemble_prompt(tool_names, disabled, compact=compact)
@@ -2098,6 +2103,7 @@ async def stream_agent_loop(
     approved_plan: Optional[str] = None,
     tool_policy: Optional[ToolPolicy] = None,
     workspace: Optional[str] = None,
+    suppress_local_context: bool = False,
     _is_teacher_run: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
@@ -2139,6 +2145,8 @@ async def stream_agent_loop(
     _intent = _classify_agent_request(messages, _last_user)
     _round_limit_continue = _is_round_limit_continuation(_last_user)
     _permission_resume_context = _is_permission_resume_context(messages)
+    if _permission_resume_context:
+        suppress_local_context = True
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
@@ -2401,7 +2409,7 @@ async def stream_agent_loop(
         mcp_disabled_map=_mcp_disabled_map,
         compact=_is_api_model,
         owner=owner,
-        suppress_local_context=guide_only,
+        suppress_local_context=guide_only or suppress_local_context,
         active_email=active_email,
         workspace=workspace,
     )

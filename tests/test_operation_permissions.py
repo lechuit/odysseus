@@ -481,8 +481,7 @@ def test_pending_permission_response_adds_one_shot_rule(monkeypatch):
     assert consumed["decision"] == "allow_once"
     assert consumed["operation"]["tool"] == "bash"
     assert "git push origin main" in consumed["operation"]["content"]
-    assert "bash" in consumed["resume_tools"]
-    assert "ask_user" in consumed["resume_tools"]
+    assert consumed["resume_tools"] == ["bash"]
 
     allowed = op.evaluate_tool_permission("bash", "git push origin main", session_id=sid)
     assert allowed.behavior == "allow"
@@ -512,7 +511,7 @@ def test_permission_resume_note_and_tools_for_file_approval(monkeypatch):
     consumed = op.consume_pending_permission_response(sid, "Permitir esta sesión")
     tools = set(consumed["resume_tools"])
 
-    assert {"edit_file", "write_file", "bash", "read_file", "get_workspace"} <= tools
+    assert tools == {"edit_file"}
     note = op.permission_resume_note(consumed)
     assert "OPERATION PERMISSION RESUME" in note
     assert "FIRST action in this turn MUST be to invoke the approved tool again" in note
@@ -541,7 +540,7 @@ def test_permission_resume_note_for_read_file_requires_exact_replay(monkeypatch)
 
     consumed = op.consume_pending_permission_response(sid, "Permitir una vez")
     tools = set(consumed["resume_tools"])
-    assert "read_file" in tools
+    assert tools == {"read_file"}
 
     note = op.permission_resume_note(consumed)
     assert "Approved tool: read_file" in note

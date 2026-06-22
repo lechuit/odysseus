@@ -1807,7 +1807,12 @@ def resume_tools_for_operation(operation: Mapping[str, Any] | Operation | None) 
     The user's approval label ("Permitir una vez", etc.) is intentionally
     low-signal text. Without an explicit tool hint, the next agent turn may
     re-run retrieval against the label itself and drop the tool that was just
-    approved. Keep this deterministic and conservative.
+    approved.
+
+    Keep this deliberately *minimal*: the resume turn's first action must replay
+    the exact approved operation. Extra loop primitives or adjacent file tools
+    let small local models drift into unrelated remembered tasks after the
+    approved tool returns.
     """
 
     if isinstance(operation, Operation):
@@ -1818,25 +1823,25 @@ def resume_tools_for_operation(operation: Mapping[str, Any] | Operation | None) 
         tool = ""
     tool = _norm_tool(tool)
 
-    base = {"ask_user", "update_plan"}
-    file_read = {"get_workspace", "ls", "glob", "grep", "read_file"}
-    file_write = file_read | {"write_file", "edit_file", "bash"}
-
-    if tool in {"write_file", "edit_file"}:
-        return sorted(base | file_write)
-    if tool in {"read_file", "grep", "glob", "ls", "get_workspace"}:
-        return sorted(base | file_read)
-    if tool == "bash":
-        return sorted(base | file_read | {"bash"})
-    if tool == "python":
-        return sorted(base | file_read | {"python"})
-    if tool == "web_fetch":
-        return sorted(base | {"web_search", "web_fetch"})
+    if tool in {
+        "bash",
+        "python",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "glob",
+        "ls",
+        "get_workspace",
+        "web_fetch",
+        "web_search",
+    }:
+        return [tool]
     if tool.startswith("mcp__"):
-        return sorted(base | {tool})
+        return [tool]
     if tool:
-        return sorted(base | {tool})
-    return sorted(base)
+        return [tool]
+    return []
 
 
 def permission_resume_note(consumed: Mapping[str, Any]) -> str:

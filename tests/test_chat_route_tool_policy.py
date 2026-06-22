@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-_CHAT_ROUTES = Path(__file__).resolve().parent.parent / "routes" / "chat_routes.py"
+_ROOT = Path(__file__).resolve().parent.parent
+_CHAT_ROUTES = _ROOT / "routes" / "chat_routes.py"
 
 
 # ── Source-level guards ─────────────────────────────────────────
@@ -128,6 +129,26 @@ def test_permission_resume_note_is_inserted_after_permission_label():
 
     assert "_insert_at = _idx + 1" in source
     assert "replaying the approved operation" in source
+
+
+def test_permission_resume_suppresses_unrelated_local_context():
+    """Approval labels should replay only the approved operation.
+
+    The resume turn must not inject skills/memories or automatically expose
+    loop tools such as ask_user/update_plan, because those gave small local
+    models enough surface area to wander into unrelated remembered tasks after
+    the approved operation completed.
+    """
+    route_source = _CHAT_ROUTES.read_text(encoding="utf-8")
+    agent_source = (_ROOT / "src" / "agent_loop.py").read_text(encoding="utf-8")
+
+    assert "allow_tool_preprocessing = False" in route_source
+    assert "no_memory = True" in route_source
+    assert "use_rag = \"false\"" in route_source
+    assert "if _permission_resume_context:" in agent_source
+    assert "suppress_local_context = True" in agent_source
+    assert "if not suppress_local_context:" in agent_source
+    assert 'tool_names |= {"ask_user", "update_plan"}' in agent_source
 
 
 # ── Functional tests of the disabled-tools logic ───────────────
