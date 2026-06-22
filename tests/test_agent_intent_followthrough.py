@@ -200,6 +200,7 @@ def test_strict_tool_turn_forces_tool_free_answer_after_literal_tool(monkeypatch
             [{"role": "user", "content": "Run exact command:\ncat /tmp/ody_session_test.txt"}],
             relevant_tools={"bash"},
             strict_tool_turn=True,
+            workspace="/tmp/odysseus-workspace",
             max_rounds=3,
             _is_teacher_run=True,
         )

@@ -2310,7 +2310,7 @@ async def stream_agent_loop(
     # tool names. It prevents obvious requests like "last 5 emails" from
     # collapsing to only ask_user/manage_memory when vector retrieval misses or
     # times out.
-    if not guide_only and _relevant_tools is not None:
+    if not guide_only and _relevant_tools is not None and not strict_tool_turn:
         for _domain in (_intent.get("domains") or set()):
             _relevant_tools.update(_DOMAIN_TOOL_MAP.get(str(_domain), set()))
         if workspace:
