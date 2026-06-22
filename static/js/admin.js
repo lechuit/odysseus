@@ -3,6 +3,7 @@
 
 import uiModule from './ui.js';
 import settingsModule from './settings.js';
+import sessionModule from './sessions.js';
 import { providerLogo, providerLogoFromUrl } from './providers.js';
 import { sortModelObjects } from './modelSort.js';
 import { PROVIDER_DEVICE_FLOWS, formatDeviceFlowError, runProviderDeviceFlow } from './providerDeviceFlow.js';
@@ -1889,6 +1890,115 @@ async function loadBuiltinTools() {
   }
 }
 
+function _opSafetyBadge(label, tone) {
+  const cls = tone ? ` operation-safety-badge-${tone}` : '';
+  return `<span class="operation-safety-badge${cls}">${esc(String(label))}</span>`;
+}
+
+function _opSafetyMetric(label, value) {
+  return `<div class="operation-safety-metric"><span>${esc(String(label))}</span><strong>${esc(String(value))}</strong></div>`;
+}
+
+function _formatRule(rule) {
+  const behavior = String(rule?.behavior || '').toUpperCase();
+  const tool = String(rule?.tool || 'tool');
+  const match = String(rule?.match || 'tool');
+  const pattern = String(rule?.pattern || '*') || '*';
+  return `<div class="operation-safety-rule">
+    <span class="operation-safety-rule-behavior operation-safety-rule-${esc(String(rule?.behavior || ''))}">${esc(behavior)}</span>
+    <span class="operation-safety-rule-main"><strong>${esc(tool)}</strong> ${esc(match)} <code>${esc(pattern)}</code></span>
+  </div>`;
+}
+
+async function loadOperationSafety() {
+  const panel = el('adm-operation-safety');
+  if (!panel) return;
+  const currentSessionId = sessionModule?.getCurrentSessionId?.() || '';
+  const query = currentSessionId ? `?session_id=${encodeURIComponent(currentSessionId)}` : '';
+  panel.innerHTML = '<div class="admin-empty">Loading operation safety…</div>';
+  try {
+    const res = await fetch(`/api/operation-safety${query}`, { credentials: 'same-origin' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Failed to load operation safety');
+    const sandbox = data.sandbox || {};
+    const metrics = data.metrics || {};
+    const persistentRules = Array.isArray(data.persistent_rules) ? data.persistent_rules : [];
+    const sessionPerms = data.session_permissions || {};
+    const counts = sessionPerms.counts || {};
+    const pending = sessionPerms.pending_approval || null;
+    const sandboxTone = sandbox.sandboxed ? 'ok' : (sandbox.enabled ? 'warn' : 'muted');
+    const sandboxLabel = sandbox.sandboxed
+      ? `Sandboxed via ${sandbox.selected_backend || 'backend'}`
+      : (sandbox.enabled ? 'Sandbox enabled, unavailable' : 'Sandbox disabled');
+    const fs = sandbox.filesystem || {};
+    const ruleHtml = persistentRules.length
+      ? persistentRules.slice(0, 8).map(_formatRule).join('')
+      : '<div class="operation-safety-empty">No persistent operation rules configured.</div>';
+    const extraRules = persistentRules.length > 8
+      ? `<div class="operation-safety-more">+${persistentRules.length - 8} more rule(s)</div>`
+      : '';
+    const sessionLine = currentSessionId
+      ? `Current chat: ${currentSessionId.slice(0, 8)}…`
+      : 'No active chat selected.';
+    const pendingHtml = pending
+      ? `<div class="operation-safety-pending">
+          <span class="operation-safety-dot"></span>
+          <span><strong>Pending approval:</strong> ${esc(pending.operation?.description || pending.operation?.tool || 'operation')}</span>
+        </div>`
+      : '<div class="operation-safety-empty">No pending approval in the current chat.</div>';
+    panel.innerHTML = `
+      <div class="operation-safety-summary">
+        <div class="operation-safety-status">
+          ${_opSafetyBadge(data.enabled ? 'Permissions on' : 'Permissions off', data.enabled ? 'ok' : 'warn')}
+          ${_opSafetyBadge(data.interactive_ask_enabled ? 'Interactive ask on' : 'Ask disabled', data.interactive_ask_enabled ? 'ok' : 'warn')}
+          ${_opSafetyBadge(sandboxLabel, sandboxTone)}
+          ${sandbox.network_deny ? _opSafetyBadge('Network denied in sandbox', 'muted') : ''}
+        </div>
+        <div class="operation-safety-grid">
+          ${_opSafetyMetric('Allowed', metrics.allowed || 0)}
+          ${_opSafetyMetric('Asked', metrics.asked || 0)}
+          ${_opSafetyMetric('Denied', metrics.denied || 0)}
+          ${_opSafetyMetric('Approved', metrics.approved || 0)}
+        </div>
+      </div>
+      <div class="operation-safety-columns">
+        <section class="operation-safety-section">
+          <h3>Sandbox boundary</h3>
+          <div class="operation-safety-copy">
+            Mode: <strong>${esc(sandbox.effective_mode || 'unknown')}</strong>${sandbox.enforcement_level ? ` · ${esc(sandbox.enforcement_level)}` : ''}
+          </div>
+          <div class="operation-safety-copy">
+            Filesystem rules: read allow ${esc(String(fs.allow_read_count || 0))}, write allow ${esc(String(fs.allow_write_count || 0))}, read deny ${esc(String(fs.deny_read_count || 0))}, write deny ${esc(String(fs.deny_write_count || 0))}.
+          </div>
+          ${sandbox.fallback_unsandboxed ? '<div class="operation-safety-warning">Warning: sandbox fallback is unsandboxed.</div>' : ''}
+          ${(sandbox.warnings || []).length ? `<div class="operation-safety-warning">${esc((sandbox.warnings || []).join(' · '))}</div>` : ''}
+        </section>
+        <section class="operation-safety-section">
+          <h3>Current chat</h3>
+          <div class="operation-safety-copy">${esc(sessionLine)}</div>
+          <div class="operation-safety-copy">Session rules: ${esc(String(counts.session || 0))} · one-shot: ${esc(String(counts.one_shot || 0))}</div>
+          ${pendingHtml}
+        </section>
+      </div>
+      <section class="operation-safety-section operation-safety-rules">
+        <h3>Persistent rules</h3>
+        ${ruleHtml}
+        ${extraRules}
+      </section>
+    `;
+  } catch (err) {
+    panel.innerHTML = `<div class="admin-error">Failed to load operation safety: ${esc(err?.message || err)}</div>`;
+  }
+}
+
+function initOperationSafety() {
+  const btn = el('adm-opSafetyRefresh');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => loadOperationSafety());
+  }
+}
+
 async function loadMcpServers() {
   const list = el('adm-mcpList');
   if (!list) return;  // MCP section not visible / not yet rendered
@@ -2977,7 +3087,7 @@ function initAll() {
   modalEl = el('settings-modal');
   const inits = [
     initSignupToggle, initAddUser, initEndpointForm, initMcpForm,
-    initCalDAV, initBackup, initDangerZone, initTokenForm, initLogsView,
+    initCalDAV, initBackup, initDangerZone, initTokenForm, initOperationSafety, initLogsView,
     () => settingsModule.initIntegrations()
   ];
   for (const fn of inits) {
@@ -2990,6 +3100,7 @@ function initAll() {
 function refreshAll() {
   loadUsers();
   loadEndpoints();
+  loadOperationSafety();
   loadBuiltinTools();
   loadMcpServers();
   loadTokens();

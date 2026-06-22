@@ -2311,4 +2311,55 @@ def setup_model_routes(model_discovery):
         _save_settings(settings)
         return {"ok": True, "disabled": body.disabled}
 
+    @router.get("/operation-safety")
+    def operation_safety_status(request: Request, session_id: Optional[str] = Query(None)):
+        """Read-only status for operation permissions and the local sandbox.
+
+        This powers the Settings → Agent Tools safety panel.  It intentionally
+        mirrors the same data available through manage_settings without
+        requiring an agent/tool turn.
+        """
+
+        require_admin(request)
+        from src.operation_permissions import (
+            builtin_permissions_enabled,
+            get_persistent_rules,
+            interactive_permissions_enabled,
+            metrics_snapshot,
+            operation_permissions_enabled,
+            session_rules_snapshot,
+        )
+        from src.sandbox_runner import sandbox_status
+
+        sandbox = sandbox_status()
+        filesystem = sandbox.get("filesystem") or {}
+        sandbox_public = {
+            "enabled": bool(sandbox.get("enabled")),
+            "sandboxed": bool(sandbox.get("sandboxed")),
+            "effective_mode": sandbox.get("effective_mode") or "",
+            "enforcement_level": sandbox.get("enforcement_level") or "",
+            "selected_backend": sandbox.get("selected_backend") or "",
+            "fail_if_unavailable": bool(sandbox.get("fail_if_unavailable")),
+            "network_deny": bool(sandbox.get("network_deny")),
+            "command_execution_blocked": bool(sandbox.get("command_execution_blocked")),
+            "fallback_unsandboxed": bool(sandbox.get("fallback_unsandboxed")),
+            "reason": sandbox.get("reason") or "",
+            "warnings": list(sandbox.get("warnings") or []),
+            "filesystem": {
+                "allow_read_count": int(filesystem.get("allow_read_count") or 0),
+                "allow_write_count": int(filesystem.get("allow_write_count") or 0),
+                "deny_read_count": int(filesystem.get("deny_read_count") or 0),
+                "deny_write_count": int(filesystem.get("deny_write_count") or 0),
+            },
+        }
+        return {
+            "enabled": operation_permissions_enabled(),
+            "builtin_policy_enabled": builtin_permissions_enabled(),
+            "interactive_ask_enabled": interactive_permissions_enabled(),
+            "sandbox": sandbox_public,
+            "metrics": metrics_snapshot(),
+            "persistent_rules": get_persistent_rules(),
+            "session_permissions": session_rules_snapshot(session_id or ""),
+        }
+
     return router

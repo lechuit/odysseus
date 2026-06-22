@@ -23461,6 +23461,167 @@ details.hwfit-serve-advanced > .hwfit-serve-checks:last-of-type {
   font-family: 'Berkeley Mono', 'SF Mono', 'Fira Code', monospace;
 }
 
+/* ── Admin: Operation safety ── */
+.operation-safety-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.operation-safety-head h2 {
+  margin-bottom: 4px;
+}
+.operation-safety-panel {
+  margin-top: 12px;
+}
+.operation-safety-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.operation-safety-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.operation-safety-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: color-mix(in srgb, var(--fg) 82%, white);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.operation-safety-badge-ok {
+  border-color: color-mix(in srgb, var(--green, #50fa7b) 45%, var(--border));
+  background: color-mix(in srgb, var(--green, #50fa7b) 9%, transparent);
+}
+.operation-safety-badge-warn {
+  border-color: color-mix(in srgb, var(--warn, #f0ad4e) 50%, var(--border));
+  background: color-mix(in srgb, var(--warn, #f0ad4e) 10%, transparent);
+}
+.operation-safety-badge-muted {
+  opacity: 0.82;
+}
+.operation-safety-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.operation-safety-metric {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+.operation-safety-metric span {
+  display: block;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 10px;
+}
+.operation-safety-metric strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+}
+.operation-safety-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.operation-safety-section {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 86%, var(--bg));
+}
+.operation-safety-section h3 {
+  margin: 0 0 6px;
+  color: color-mix(in srgb, var(--fg) 86%, white);
+  font-size: 12px;
+  font-weight: 600;
+}
+.operation-safety-copy,
+.operation-safety-empty,
+.operation-safety-more,
+.operation-safety-warning,
+.operation-safety-pending {
+  color: color-mix(in srgb, var(--fg) 68%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.operation-safety-warning {
+  margin-top: 6px;
+  color: color-mix(in srgb, var(--warn, #f0ad4e) 75%, var(--fg));
+}
+.operation-safety-pending {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 6px;
+  color: var(--fg);
+}
+.operation-safety-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--warn, #f0ad4e);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn, #f0ad4e) 16%, transparent);
+}
+.operation-safety-rules {
+  margin-top: 8px;
+}
+.operation-safety-rule {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  font-size: 11px;
+}
+.operation-safety-rule:first-of-type {
+  border-top: 0;
+}
+.operation-safety-rule-behavior {
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.operation-safety-rule-allow { color: var(--green, #50fa7b); }
+.operation-safety-rule-ask { color: var(--warn, #f0ad4e); }
+.operation-safety-rule-deny { color: var(--red); }
+.operation-safety-rule-main {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--fg) 74%, white);
+}
+.operation-safety-rule code {
+  color: var(--fg);
+  font-size: 10px;
+}
+@media (max-width: 720px) {
+  .operation-safety-head {
+    flex-direction: column;
+  }
+  .operation-safety-grid,
+  .operation-safety-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Cookbook serve param hints */
 .hwfit-hint {
   display: inline-flex;

@@ -880,6 +880,65 @@ def test_patch_models_saves_pinned_models(monkeypatch):
     assert result["pinned_count"] == 2
 
 
+def test_operation_safety_status_exposes_sanitized_permission_state(monkeypatch):
+    endpoint = _get_route("/api/operation-safety", "GET")
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+
+    from src import operation_permissions as op
+    from src import sandbox_runner
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "interactive_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "metrics_snapshot", lambda: {"allowed": 2, "asked": 1, "denied": 0, "approved": 1})
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        {"id": "r1", "behavior": "ask", "tool": "bash", "match": "prefix", "pattern": "git push"}
+    ])
+    monkeypatch.setattr(op, "session_rules_snapshot", lambda sid: {
+        "session_id": sid,
+        "session_rules": [],
+        "one_shot_rules": [],
+        "pending_approval": {"operation": {"tool": "bash", "description": "bash: cat .env"}, "reason": "protected"},
+        "counts": {"session": 0, "one_shot": 0, "pending": 1},
+    })
+    monkeypatch.setattr(sandbox_runner, "sandbox_status", lambda: {
+        "enabled": True,
+        "sandboxed": True,
+        "effective_mode": "sandboxed",
+        "enforcement_level": "os_sandbox",
+        "selected_backend": "sandbox-exec",
+        "fail_if_unavailable": True,
+        "network_deny": True,
+        "command_execution_blocked": False,
+        "fallback_unsandboxed": False,
+        "reason": "/tmp/profile.sb",
+        "warnings": [],
+        "filesystem": {
+            "allow_read_count": 2,
+            "allow_write_count": 2,
+            "deny_read_count": 20,
+            "deny_write_count": 31,
+            "allow_read": ["/secret-should-not-leak"],
+        },
+    })
+
+    result = endpoint(_PinnedFakeRequest(), session_id="s1")
+
+    assert result["enabled"] is True
+    assert result["sandbox"]["sandboxed"] is True
+    assert result["sandbox"]["selected_backend"] == "sandbox-exec"
+    assert result["sandbox"]["filesystem"] == {
+        "allow_read_count": 2,
+        "allow_write_count": 2,
+        "deny_read_count": 20,
+        "deny_write_count": 31,
+    }
+    assert "allow_read" not in result["sandbox"]["filesystem"]
+    assert result["metrics"]["asked"] == 1
+    assert result["persistent_rules"][0]["pattern"] == "git push"
+    assert result["session_permissions"]["pending_approval"]["operation"]["description"] == "bash: cat .env"
+
+
 def test_patch_models_pinned_does_not_clobber_hidden(monkeypatch):
     ep = _make_endpoint(hidden_models=json.dumps(["hide-me"]))
     db = _PinnedFakeDb([ep])
