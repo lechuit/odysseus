@@ -142,6 +142,8 @@ DEFAULT_SETTINGS = {
             "allow_read": [],
             "allow_write": [],
             "deny": [],
+            "deny_read": [],
+            "deny_write": [],
         },
     },
     # Extra directory roots that read_file / write_file may access, in

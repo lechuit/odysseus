@@ -196,7 +196,7 @@ async def test_subprocess_cwd_is_workspace_e2e(ws, admin):
 @pytest.mark.asyncio
 async def test_get_workspace_tool(ws, admin):
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a", workspace=ws)
-    assert r["exit_code"] == 0 and r["output"].startswith(ws) and "not sandboxed" in r["output"]
+    assert r["exit_code"] == 0 and r["output"].startswith(ws) and "OS-sandboxed" in r["output"]
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a")  # none active
     assert r["exit_code"] == 0 and "No workspace" in r["output"]
 

@@ -25,7 +25,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Run a shell command (full access). Prefer a dedicated tool whenever one fits the job (reading, writing, editing, searching, or listing files); use bash only for what no dedicated tool covers (installs, git, builds, running programs, system info). Do NOT create or edit files via bash redirects/heredocs/sed -- use the dedicated file tools.",
+            "description": "Run a shell command after operation-level permission checks; if the OS sandbox is enabled, filesystem/network access may also be constrained. Prefer a dedicated tool whenever one fits the job (reading, writing, editing, searching, or listing files); use bash only for what no dedicated tool covers (installs, git, builds, running programs, system info). Do NOT create or edit files via bash redirects/heredocs/sed -- use the dedicated file tools.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -146,7 +146,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_workspace",
-            "description": "Return the absolute path of the active workspace folder the user is working in. File tools are confined to it; the shell starts there but is not sandboxed. Call this first when the user refers to 'the project'/'the code'/'this folder' without a path, instead of asking them. Takes no arguments.",
+            "description": "Return the absolute path of the active workspace folder the user is working in. File tools are confined to it; Bash/Python start there and may be OS-sandboxed when sandbox settings are enabled. Call this first when the user refers to 'the project'/'the code'/'this folder' without a path, instead of asking them. Takes no arguments.",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -768,13 +768,13 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "manage_settings",
-            "description": "Manage user preferences and settings. Use `disable_tool`/`enable_tool`/`list_tools` to turn individual tools on or off globally. Also manages operation-level permission rules with list_permission_rules/add_permission_rule/delete_permission_rule/clear_permission_rules/permission_metrics.",
+            "description": "Manage user preferences and settings. Use `disable_tool`/`enable_tool`/`list_tools` to turn individual tools on or off globally. Also manages operation-level permission rules with list_permission_rules/add_permission_rule/delete_permission_rule/clear_permission_rules/permission_metrics, plus sandbox_status/set_sandbox for the local OS sandbox.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools", "list_permission_rules", "add_permission_rule", "delete_permission_rule", "clear_permission_rules", "permission_metrics"]},
+                    "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools", "list_permission_rules", "add_permission_rule", "delete_permission_rule", "clear_permission_rules", "permission_metrics", "sandbox_status", "set_sandbox"]},
                     "key": {"type": "string", "description": "Setting key (for get/set/delete)"},
-                    "value": {"description": "Setting value (for set) — can be string, number, boolean, or object"},
+                    "value": {"description": "Setting value (for set/set_sandbox) — can be string, number, boolean, or object. For set_sandbox use {\"enabled\": bool, \"fail_if_unavailable\": bool, \"network\": {\"deny\": bool}, \"filesystem\": {...}}."},
                     "tool": {"type": "string", "description": "Tool name to disable/enable or permission-rule tool name (e.g. bash, edit_file, web_fetch, mcp__server__tool)."},
                     "behavior": {"type": "string", "enum": ["allow", "deny", "ask"], "description": "Permission behavior for add_permission_rule."},
                     "match": {"type": "string", "enum": ["tool", "exact", "prefix", "glob", "path", "domain", "mcp"], "description": "Matcher type for add_permission_rule."},

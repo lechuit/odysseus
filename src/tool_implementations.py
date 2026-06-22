@@ -1045,6 +1045,18 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
         def _mask(k, v):
             return "••••• (set in panel)" if _is_secret(k) and v else v
 
+        def _sandbox_payload_from_args():
+            raw_value = args.get("value")
+            if isinstance(raw_value, dict):
+                return raw_value
+            payload = {}
+            for field in ("enabled", "fail_if_unavailable", "failIfUnavailable", "network", "filesystem"):
+                if field in args:
+                    payload[field] = args[field]
+            if "network_deny" in args:
+                payload.setdefault("network", {})["deny"] = args.get("network_deny")
+            return payload
+
         if action == "list":
             s = load_settings()
             shown = {k: _mask(k, v) for k, v in s.items() if k in DEFAULT_SETTINGS and not isinstance(v, dict)}
@@ -1069,6 +1081,24 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                 return {"error": f"Unknown setting '{raw}'. Use action='list' to see available settings.", "exit_code": 1}
             if _is_secret(key):
                 return {"response": f"'{key}' is a credential/secret — for security I can't set it from chat. Open Settings and set it there.", "exit_code": 0}
+            if key == "operation_permissions_sandbox":
+                if not isinstance(value, dict):
+                    return {"error": "operation_permissions_sandbox expects an object value.", "exit_code": 1}
+                from src.sandbox_runner import normalize_sandbox_settings
+
+                s = load_settings()
+                s[key] = normalize_sandbox_settings(value, s.get(key, DEFAULT_SETTINGS[key]))
+                save_settings(s)
+                updated = s[key]
+                return {
+                    "response": (
+                        "Updated operation_permissions_sandbox "
+                        f"(enabled={updated['enabled']}, fail_if_unavailable={updated['fail_if_unavailable']}, "
+                        f"network_deny={updated['network']['deny']})."
+                    ),
+                    "value": updated,
+                    "exit_code": 0,
+                }
             # Structured settings (dicts/lists like keybinds, default_model_fallbacks)
             # have no safe scalar coercion — _coerce would pass a bare string
             # straight through and clobber the structure. Refuse them here; they're
@@ -1095,6 +1125,37 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             if key.endswith("_model") and s.get(f"{key[:-6]}_endpoint_id"):
                 return {"response": f"Set {key} = {value} (endpoint {s.get(f'{key[:-6]}_endpoint_id')}).", "exit_code": 0}
             return {"response": f"Set {key} = {value}.", "exit_code": 0}
+
+        elif action in ("sandbox_status", "set_sandbox"):
+            from src.sandbox_runner import normalize_sandbox_settings, sandbox_status
+
+            if action == "sandbox_status":
+                status = sandbox_status(cwd=args.get("cwd") or None)
+                warnings = status.get("warnings") or []
+                response = (
+                    f"Sandbox enabled={status['enabled']}, sandboxed={status['sandboxed']}, "
+                    f"backend={status.get('selected_backend') or 'none'}, "
+                    f"fail_if_unavailable={status['fail_if_unavailable']}, "
+                    f"network_deny={status['network_deny']}."
+                )
+                if warnings:
+                    response += "\nWarnings: " + "; ".join(str(w) for w in warnings)
+                return {"response": response, "sandbox": status, "exit_code": 0}
+
+            s = load_settings()
+            current = s.get("operation_permissions_sandbox", DEFAULT_SETTINGS["operation_permissions_sandbox"])
+            s["operation_permissions_sandbox"] = normalize_sandbox_settings(_sandbox_payload_from_args(), current)
+            save_settings(s)
+            updated = s["operation_permissions_sandbox"]
+            return {
+                "response": (
+                    "Updated sandbox settings "
+                    f"(enabled={updated['enabled']}, fail_if_unavailable={updated['fail_if_unavailable']}, "
+                    f"network_deny={updated['network']['deny']})."
+                ),
+                "value": updated,
+                "exit_code": 0,
+            }
 
         elif action == "delete" or action == "reset":
             key = _resolve(args.get("key", ""))
