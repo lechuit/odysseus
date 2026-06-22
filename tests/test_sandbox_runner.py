@@ -742,6 +742,27 @@ def test_sandbox_status_warns_when_enabled_without_backend(monkeypatch, tmp_path
     assert "running unsandboxed" in status["warnings"][0]
 
 
+def test_sandbox_status_warns_about_glob_filesystem_paths(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "fail_if_unavailable": False,
+        "filesystem": {
+            "deny_read": [str(tmp_path / "secrets" / "**")],
+            "allow_write": [str(tmp_path / "build" / "*.tmp")],
+        },
+    })
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Plan9")
+
+    status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
+
+    warnings = "\n".join(status["warnings"])
+    assert "filesystem.deny_read contains glob-like path" in warnings
+    assert "filesystem.allow_write contains glob-like path" in warnings
+    assert "concrete paths" in warnings
+
+
 def test_sandbox_status_includes_linux_dependency_report(monkeypatch, tmp_path):
     from src import sandbox_runner
 

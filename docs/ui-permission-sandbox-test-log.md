@@ -251,3 +251,15 @@ No pending macOS UI checks remain from this sandbox batch.
 - Validation run:
   - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 72 passed, 3 skipped on macOS.
   - broader permission/sandbox/agent suite: 172 passed, 3 skipped on macOS.
+
+## Sandbox filesystem glob warning
+
+- Date: 2026-06-22
+- Reference behavior reviewed:
+  - Linux sandbox backends work with concrete mount paths, so glob-like filesystem settings can be misleading.
+- Odysseus hardening added:
+  - `sandbox_status` now warns when `filesystem.allow_read`, `allow_write`, `deny`, `deny_read`, or `deny_write` contains glob-like characters such as `*`, `?`, `[]`, or `{}`.
+  - The warning explains that sandbox filesystem settings require concrete paths.
+- Validation run:
+  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 73 passed, 3 skipped on macOS.
+  - broader permission/sandbox/agent suite: 173 passed, 3 skipped on macOS.

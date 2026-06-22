@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 _BARE_GIT_GUARD_NAMES = ("HEAD", "objects", "refs", "hooks", "config")
+_SANDBOX_GLOB_CHARS = "*?[]{}"
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,27 @@ def _filesystem_setting_paths(key: str) -> List[str]:
     settings = normalize_sandbox_settings(_settings())
     fs = settings.get("filesystem") if isinstance(settings.get("filesystem"), dict) else {}
     return _unique_real(_listish(fs.get(key)))
+
+
+def _filesystem_glob_warnings(settings: Mapping[str, Any]) -> List[str]:
+    """Return warnings for glob-like sandbox filesystem settings.
+
+    The sandbox backends receive concrete mount/mask destinations.  Treating a
+    pattern such as ``/secrets/**`` as a literal path is almost certainly not
+    what the user meant, so surface it in ``sandbox_status`` instead of letting
+    the configuration silently miss.
+    """
+
+    fs = settings.get("filesystem") if isinstance(settings.get("filesystem"), Mapping) else {}
+    warnings: List[str] = []
+    for key in ("allow_read", "allow_write", "deny", "deny_read", "deny_write"):
+        for path in _listish(fs.get(key)):
+            if any(ch in path for ch in _SANDBOX_GLOB_CHARS):
+                warnings.append(
+                    f"sandbox filesystem.{key} contains glob-like path {path!r}; "
+                    "sandbox filesystem settings require concrete paths"
+                )
+    return warnings
 
 
 def _workspace_paths(cwd: str, *, include_read_overrides: bool = True) -> Tuple[List[str], List[str], List[str], List[str]]:
@@ -773,6 +795,7 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
     if settings["enabled"]:
         warnings.extend(dependencies.get("errors") or [])
         warnings.extend(dependencies.get("warnings") or [])
+        warnings.extend(_filesystem_glob_warnings(settings))
     if not settings["enabled"]:
         warnings.append("sandbox is disabled; operation permissions still run before Bash/Python")
     return {
