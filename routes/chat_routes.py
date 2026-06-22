@@ -7,7 +7,7 @@ import re
 import time
 import logging
 from datetime import datetime
-from typing import Dict, Any, AsyncGenerator, List, Optional
+from typing import Dict, Any, AsyncGenerator, List, Optional, Set
 
 from fastapi import APIRouter, Request, HTTPException, Form, Query
 from fastapi.responses import StreamingResponse
@@ -69,6 +69,46 @@ def _is_literal_tool_control_turn(message: str) -> bool:
     if not isinstance(message, str):
         return False
     return bool(_LITERAL_TOOL_CONTROL_RE.search(message.strip()))
+
+
+def _literal_tool_control_relevant_tools(message: str) -> Optional[Set[str]]:
+    """Return a strict tool allowlist for literal tool-control turns."""
+    if not _is_literal_tool_control_turn(message):
+        return None
+
+    text = message or ""
+    lower = text.lower()
+    tools: Set[str] = set()
+
+    explicit_tool_names = {
+        "bash",
+        "python",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "glob",
+        "ls",
+        "web_fetch",
+        "web_search",
+    }
+    for name in explicit_tool_names:
+        if re.search(rf"\b{re.escape(name)}\b", lower):
+            tools.add(name)
+
+    # Shell snippets such as `cat /tmp/foo` are meant for bash even if the
+    # prompt says "command" rather than naming the bash tool explicitly.
+    if re.search(
+        r"(?:^|\n)\s*(?:cat|ls|pwd|grep|rg|find|sed|awk|head|tail|wc|stat)\b[^\n]*\s/(?:tmp|Users|var|etc|private|opt)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        tools.add("bash")
+
+    # Literal control turns should never unlock semantic memory/skill tooling.
+    tools.discard("manage_memory")
+    tools.discard("manage_skills")
+    return tools or {"bash"}
 
 
 def _stream_set(session_id: str, **fields) -> None:
@@ -749,6 +789,11 @@ def setup_chat_routes(
         )
         allow_tool_preprocessing = not pre_context_tool_policy.block_all_tool_calls
         literal_tool_control = _is_literal_tool_control_turn(message)
+        literal_tool_control_tools = (
+            _literal_tool_control_relevant_tools(message)
+            if literal_tool_control
+            else None
+        )
         if permission_context_note or literal_tool_control:
             # A permission label such as "Permitir una vez" is not a new task.
             # Do not run memory/RAG/skill preprocessing against that label; it
@@ -1399,7 +1444,9 @@ def setup_chat_routes(
                         plan_mode=plan_mode,
                         approved_plan=approved_plan or None,
                         workspace=workspace or None,
-                        relevant_tools=permission_resume_tools,
+                        relevant_tools=permission_resume_tools or literal_tool_control_tools,
+                        suppress_local_context=bool(permission_context_note or literal_tool_control),
+                        strict_tool_turn=bool(literal_tool_control and not permission_context_note),
                         permission_resume_operation=permission_resume_operation,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):

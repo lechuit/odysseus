@@ -148,3 +148,65 @@ def test_spanish_explanation_without_tool_action_is_not_nudged(monkeypatch):
     assert len(streams) == 1
     assert not executed
     assert not any(event.get("type") == "agent_step" for event in events)
+
+
+def test_strict_tool_turn_forces_tool_free_answer_after_literal_tool(monkeypatch):
+    """Literal tool-control turns must not wander into skills after the tool."""
+    streams = []
+    tool_schemas_by_round = []
+    executed = []
+
+    monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default, raising=False)
+    monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None, raising=False)
+    monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10, raising=False)
+
+    async def fake_stream(_candidates, messages, **kwargs):
+        round_index = len(streams)
+        streams.append(messages)
+        tool_schemas_by_round.append([
+            schema.get("function", {}).get("name")
+            for schema in (kwargs.get("tools") or [])
+        ])
+        if round_index == 0:
+            call = {
+                "name": "bash",
+                "arguments": json.dumps({"command": "cat /tmp/ody_session_test.txt"}),
+            }
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
+        else:
+            yield f'data: {json.dumps({"delta": "literal result acknowledged"})}\n\n'
+            # Simulate a small local model trying to wander into skills even
+            # after being told to answer.  The force-answer path must discard it.
+            call = {
+                "name": "manage_skills",
+                "arguments": json.dumps({"action": "list"}),
+            }
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake_execute(block, *args, **kwargs):
+        executed.append(block)
+        if block.tool_type == "manage_skills":
+            raise AssertionError("strict literal turn must not execute manage_skills")
+        return ("bash", {"output": "literal stdout", "exit_code": 0})
+
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream, raising=False)
+    monkeypatch.setattr(agent_loop, "execute_tool_block", fake_execute, raising=False)
+
+    chunks = _collect(
+        agent_loop.stream_agent_loop(
+            "https://api.openai.com/v1",
+            "gpt-4o",
+            [{"role": "user", "content": "Run exact command:\ncat /tmp/ody_session_test.txt"}],
+            relevant_tools={"bash"},
+            strict_tool_turn=True,
+            max_rounds=3,
+            _is_teacher_run=True,
+        )
+    )
+    events = _events(chunks)
+
+    assert [block.tool_type for block in executed] == ["bash"]
+    assert set(tool_schemas_by_round[0]) <= {"bash"}
+    assert tool_schemas_by_round[1] == []
+    assert any(event.get("delta") == "literal result acknowledged" for event in events)

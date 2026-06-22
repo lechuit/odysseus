@@ -2167,6 +2167,7 @@ async def stream_agent_loop(
     tool_policy: Optional[ToolPolicy] = None,
     workspace: Optional[str] = None,
     suppress_local_context: bool = False,
+    strict_tool_turn: bool = False,
     permission_resume_operation: Optional[Dict] = None,
     _is_teacher_run: bool = False,
 ) -> AsyncGenerator[str, None]:
@@ -2205,11 +2206,15 @@ async def stream_agent_loop(
 
     _t0 = time.time()
     _needs_admin = _detect_admin_intent(messages)
+    if strict_tool_turn:
+        _needs_admin = False
     _last_user = _extract_last_user_message(messages)
     _intent = _classify_agent_request(messages, _last_user)
     _round_limit_continue = _is_round_limit_continuation(_last_user)
     _permission_resume_context = _is_permission_resume_context(messages)
     if _permission_resume_context:
+        suppress_local_context = True
+    if strict_tool_turn:
         suppress_local_context = True
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
@@ -2352,7 +2357,7 @@ async def stream_agent_loop(
     # (grep, read_file, ...) that aren't in its schema list. Keep the schemas
     # in lockstep: manage_skills is callable whenever any skill is indexed,
     # and a matched skill's declared requires_toolsets ride along with it.
-    if not guide_only and _relevant_tools is not None:
+    if not guide_only and _relevant_tools is not None and not suppress_local_context:
         try:
             from services.memory.skills import SkillsManager
             from src.constants import DATA_DIR
@@ -2392,6 +2397,9 @@ async def stream_agent_loop(
     if _relevant_tools is not None:
         if (_round_limit_continue or _permission_resume_context) and not _looks_like_skill_request(_retrieval_query):
             _relevant_tools.discard("manage_skills")
+        if strict_tool_turn:
+            _relevant_tools.discard("manage_skills")
+            _relevant_tools.discard("manage_memory")
         logger.info("[agent-intent] selected_tools=%s", sorted(_relevant_tools)[:50])
 
     prep_timings["tool_selection"] = time.time() - _t1
@@ -3043,6 +3051,18 @@ async def stream_agent_loop(
             # Intercept [DONE] — don't forward until all rounds finish
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num, is_api_model=_is_api_model)
+        if strict_tool_turn and _relevant_tools is not None and tool_blocks:
+            _allowed_strict_tools = set(_relevant_tools)
+            _blocked_strict = [b.tool_type for b in tool_blocks if b.tool_type not in _allowed_strict_tools]
+            if _blocked_strict:
+                logger.info(
+                    "[agent] strict literal-tool turn discarded disallowed tool call(s): %s",
+                    sorted(set(_blocked_strict)),
+                )
+                tool_blocks = [
+                    b for b in tool_blocks
+                    if b.tool_type in _allowed_strict_tools
+                ]
 
         # Force-answer round: we told the model to STOP calling tools and
         # answer. If it ignored that and emitted a (possibly DSML) tool
@@ -3677,6 +3697,16 @@ async def stream_agent_loop(
         _append_tool_results(messages, round_response, native_tool_calls,
                              tool_results, tool_result_texts, used_native, round_num,
                              round_reasoning=round_reasoning)
+        if strict_tool_turn and tool_results:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "The requested literal tool operation has now executed. "
+                    "Do not call any more tools in this turn. Answer the "
+                    "original request using only the literal tool result above."
+                ),
+            })
+            _force_answer = True
         if permission_resume_batch_done:
             messages.append({
                 "role": "system",
