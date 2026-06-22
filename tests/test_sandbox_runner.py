@@ -42,6 +42,39 @@ def test_normalize_sandbox_settings_accepts_known_fields_only(tmp_path):
     assert normalized["filesystem"]["deny_write"] == [str(tmp_path / ".git")]
 
 
+def test_sandbox_strict_local_preset_preserves_filesystem_lists(tmp_path):
+    from src import sandbox_runner
+
+    base = {
+        "enabled": False,
+        "fail_if_unavailable": False,
+        "network": {"deny": False},
+        "filesystem": {
+            "allow_read": [str(tmp_path / "read")],
+            "allow_write": [str(tmp_path / "write")],
+            "deny_read": [str(tmp_path / ".env")],
+            "deny_write": [str(tmp_path / ".git")],
+        },
+    }
+
+    preset = sandbox_runner.sandbox_preset_settings("strict-local", base)
+
+    assert preset["enabled"] is True
+    assert preset["fail_if_unavailable"] is True
+    assert preset["network"]["deny"] is True
+    assert preset["filesystem"]["allow_read"] == [str(tmp_path / "read")]
+    assert preset["filesystem"]["allow_write"] == [str(tmp_path / "write")]
+    assert preset["filesystem"]["deny_read"] == [str(tmp_path / ".env")]
+    assert preset["filesystem"]["deny_write"] == [str(tmp_path / ".git")]
+
+
+def test_sandbox_unknown_preset_is_rejected():
+    from src import sandbox_runner
+
+    with pytest.raises(ValueError, match="unknown sandbox preset"):
+        sandbox_runner.sandbox_preset_settings("maximum-chaos")
+
+
 def test_sandbox_plan_fail_open_when_backend_missing(monkeypatch):
     from src import sandbox_runner
 

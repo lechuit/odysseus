@@ -80,6 +80,46 @@ def test_manage_settings_set_sandbox_structured_value(tmp_path, monkeypatch):
     assert saved == result["value"]
 
 
+def test_manage_settings_set_sandbox_strict_local_preset(tmp_path, monkeypatch):
+    import src.settings as settings
+    from src.tool_implementations import do_manage_settings
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "SETTINGS_FILE", str(settings_path))
+    settings._invalidate_caches()
+
+    result = asyncio.run(do_manage_settings(json.dumps({
+        "action": "set_sandbox",
+        "preset": "strict_local",
+    })))
+
+    assert result["exit_code"] == 0
+    assert result["value"]["enabled"] is True
+    assert result["value"]["fail_if_unavailable"] is True
+    assert result["value"]["network"]["deny"] is True
+    assert settings.load_settings()["operation_permissions_sandbox"] == result["value"]
+
+
+def test_manage_settings_set_sandbox_preset_via_alias(tmp_path, monkeypatch):
+    import src.settings as settings
+    from src.tool_implementations import do_manage_settings
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "SETTINGS_FILE", str(settings_path))
+    settings._invalidate_caches()
+
+    result = asyncio.run(do_manage_settings(json.dumps({
+        "action": "set",
+        "key": "sandbox",
+        "value": {"preset": "network-deny"},
+    })))
+
+    assert result["exit_code"] == 0
+    assert result["value"]["enabled"] is True
+    assert result["value"]["fail_if_unavailable"] is False
+    assert result["value"]["network"]["deny"] is True
+
+
 def test_manage_settings_set_operation_permissions_sandbox_alias(tmp_path, monkeypatch):
     import src.settings as settings
     from src.tool_implementations import do_manage_settings

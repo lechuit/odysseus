@@ -774,7 +774,8 @@ FUNCTION_TOOL_SCHEMAS = [
                 "properties": {
                     "action": {"type": "string", "enum": ["list", "get", "set", "delete", "disable_tool", "enable_tool", "list_tools", "list_permission_rules", "add_permission_rule", "delete_permission_rule", "clear_permission_rules", "list_session_permission_rules", "clear_session_permission_rules", "permission_metrics", "sandbox_status", "set_sandbox"]},
                     "key": {"type": "string", "description": "Setting key (for get/set/delete)"},
-                    "value": {"description": "Setting value (for set/set_sandbox) — can be string, number, boolean, or object. For set_sandbox use {\"enabled\": bool, \"fail_if_unavailable\": bool, \"network\": {\"deny\": bool}, \"filesystem\": {...}}."},
+                    "value": {"description": "Setting value (for set/set_sandbox) — can be string, number, boolean, or object. For set_sandbox use {\"enabled\": bool, \"fail_if_unavailable\": bool, \"network\": {\"deny\": bool}, \"filesystem\": {...}} or {\"preset\":\"strict_local\"}. Presets: off, local, network_deny, strict_local."},
+                    "preset": {"type": "string", "enum": ["off", "local", "network_deny", "strict_local"], "description": "Sandbox preset for action='set_sandbox'."},
                     "tool": {"type": "string", "description": "Tool name to disable/enable or permission-rule tool name (e.g. bash, edit_file, web_fetch, mcp__server__tool)."},
                     "behavior": {"type": "string", "enum": ["allow", "deny", "ask"], "description": "Permission behavior for add_permission_rule."},
                     "match": {"type": "string", "enum": ["tool", "exact", "prefix", "glob", "path", "domain", "mcp"], "description": "Matcher type for add_permission_rule."},

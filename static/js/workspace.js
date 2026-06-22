@@ -41,7 +41,7 @@ export function syncWorkspaceIndicator(path) {
   if (pill) {
     pill.style.display = (path && !chat) ? '' : 'none';
     pill.classList.toggle('active', !!path);
-    if (path) pill.title = `Workspace: ${path}\nFile tools are confined here; shell commands start here but are not sandboxed and can reach outside it.\nClick to clear.`;
+    if (path) pill.title = `Workspace: ${path}\nFile tools are confined here. Shell commands start here and may be OS-sandboxed when sandbox settings are enabled.\nClick to clear.`;
   }
   if (name) name.textContent = path ? _basename(path) : '';
   if (overflow) {
@@ -153,7 +153,7 @@ function _getModal() {
       <input type="text" class="styled-prompt-input workspace-cur" id="workspace-cur-path"
              spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"
              placeholder="Type or paste a folder path, then press Enter" />
-      <p class="muted workspace-note">File tools are <strong>confined</strong> to this folder. Shell commands start here but are <strong>not sandboxed</strong> and can reach outside it. A workspace scopes the tools; it is not a security boundary.</p>
+      <p class="muted workspace-note">File tools are <strong>confined</strong> to this folder. Shell commands start here and may be <strong>OS-sandboxed</strong> when sandbox settings are enabled. Without sandbox enabled, a workspace scopes tools but is not a full security boundary.</p>
       <div class="modal-body workspace-body" id="workspace-body"></div>
       <div class="modal-footer workspace-footer">
         <button type="button" class="confirm-btn confirm-btn-secondary" id="workspace-cancel">Cancel</button>

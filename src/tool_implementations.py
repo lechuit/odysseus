@@ -1050,7 +1050,7 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             if isinstance(raw_value, dict):
                 return raw_value
             payload = {}
-            for field in ("enabled", "fail_if_unavailable", "failIfUnavailable", "network", "filesystem"):
+            for field in ("enabled", "fail_if_unavailable", "failIfUnavailable", "network", "filesystem", "preset"):
                 if field in args:
                     payload[field] = args[field]
             if "network_deny" in args:
@@ -1084,10 +1084,14 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             if key == "operation_permissions_sandbox":
                 if not isinstance(value, dict):
                     return {"error": "operation_permissions_sandbox expects an object value.", "exit_code": 1}
-                from src.sandbox_runner import normalize_sandbox_settings
+                from src.sandbox_runner import normalize_sandbox_settings, sandbox_preset_settings
 
                 s = load_settings()
-                s[key] = normalize_sandbox_settings(value, s.get(key, DEFAULT_SETTINGS[key]))
+                preset = value.get("preset")
+                if preset:
+                    s[key] = sandbox_preset_settings(str(preset), s.get(key, DEFAULT_SETTINGS[key]))
+                else:
+                    s[key] = normalize_sandbox_settings(value, s.get(key, DEFAULT_SETTINGS[key]))
                 save_settings(s)
                 updated = s[key]
                 return {
@@ -1127,7 +1131,7 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             return {"response": f"Set {key} = {value}.", "exit_code": 0}
 
         elif action in ("sandbox_status", "set_sandbox"):
-            from src.sandbox_runner import normalize_sandbox_settings, sandbox_status
+            from src.sandbox_runner import normalize_sandbox_settings, sandbox_preset_settings, sandbox_status
 
             if action == "sandbox_status":
                 status = sandbox_status(cwd=args.get("cwd") or None)
@@ -1144,7 +1148,12 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
 
             s = load_settings()
             current = s.get("operation_permissions_sandbox", DEFAULT_SETTINGS["operation_permissions_sandbox"])
-            s["operation_permissions_sandbox"] = normalize_sandbox_settings(_sandbox_payload_from_args(), current)
+            payload = _sandbox_payload_from_args()
+            preset = payload.get("preset") if isinstance(payload, dict) else None
+            if preset:
+                s["operation_permissions_sandbox"] = sandbox_preset_settings(str(preset), current)
+            else:
+                s["operation_permissions_sandbox"] = normalize_sandbox_settings(payload, current)
             save_settings(s)
             updated = s["operation_permissions_sandbox"]
             return {

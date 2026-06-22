@@ -99,6 +99,54 @@ def normalize_sandbox_settings(raw: Mapping[str, Any] | None, base: Mapping[str,
     return normalized
 
 
+def sandbox_preset_settings(preset: str, base: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    """Return a normalized sandbox configuration for a named local preset.
+
+    Presets are intentionally small and deterministic so the agent can enable a
+    safer mode without hand-writing nested settings JSON.  Filesystem allow/deny
+    lists are inherited from *base*; the preset only changes the execution
+    policy knobs.
+    """
+
+    name = str(preset or "").strip().lower().replace("-", "_").replace(" ", "_")
+    current = normalize_sandbox_settings(base or {})
+    raw: Dict[str, Any]
+    if name in {"off", "disabled", "disable"}:
+        raw = {
+            "enabled": False,
+            "fail_if_unavailable": current["fail_if_unavailable"],
+            "network": {"deny": current["network"]["deny"]},
+            "filesystem": current["filesystem"],
+        }
+    elif name in {"local", "standard", "best_effort", "best_effort_local"}:
+        raw = {
+            "enabled": True,
+            "fail_if_unavailable": False,
+            "network": {"deny": current["network"]["deny"]},
+            "filesystem": current["filesystem"],
+        }
+    elif name in {"network_deny", "no_network", "local_no_network"}:
+        raw = {
+            "enabled": True,
+            "fail_if_unavailable": False,
+            "network": {"deny": True},
+            "filesystem": current["filesystem"],
+        }
+    elif name in {"strict", "strict_local", "fail_closed", "local_strict"}:
+        raw = {
+            "enabled": True,
+            "fail_if_unavailable": True,
+            "network": {"deny": True},
+            "filesystem": current["filesystem"],
+        }
+    else:
+        raise ValueError(
+            "unknown sandbox preset "
+            f"{preset!r}; expected one of: off, local, network_deny, strict_local"
+        )
+    return normalize_sandbox_settings(raw, current)
+
+
 def _network_denied() -> bool:
     return bool(normalize_sandbox_settings(_settings())["network"]["deny"])
 
