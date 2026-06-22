@@ -24,6 +24,7 @@ _SANDBOX_GLOB_CHARS = "*?[]{}"
 _BACKEND_PROBE_TIMEOUT_SECONDS = 5.0
 _BACKEND_PROBE_ERROR_CHARS = 400
 _BACKEND_PROBE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_FIREJAIL_IMPLICIT_RUNTIME_PATHS = {"/tmp"}
 
 
 @dataclass(frozen=True)
@@ -787,9 +788,13 @@ def _linux_firejail_plan(
         args_list.append("--net=none")
     writable = set(allow_write)
     for path in allow_read:
+        if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
+            continue
         if os.path.exists(path) and path != private:
             args_list.append(f"--whitelist={path}")
     for path in allow_write:
+        if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
+            continue
         if os.path.exists(path):
             if path != private:
                 args_list.append(f"--whitelist={path}")
@@ -801,9 +806,13 @@ def _linux_firejail_plan(
         if os.path.exists(path) and path not in writable:
             args_list.append(f"--read-only={path}")
     for path in extra_read:
+        if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
+            continue
         if os.path.exists(path) and path != private:
             args_list.append(f"--whitelist={path}")
     for path in extra_write:
+        if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
+            continue
         if os.path.exists(path):
             if path != private:
                 args_list.append(f"--whitelist={path}")

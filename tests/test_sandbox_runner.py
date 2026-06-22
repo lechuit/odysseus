@@ -670,6 +670,22 @@ def test_firejail_plan_honors_approved_read_write_overrides(monkeypatch, tmp_pat
     assert f"--read-write={write_dir}" in command
 
 
+def test_firejail_plan_skips_implicit_runtime_tmp(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "network": {"deny": False}})
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/firejail" if name == "firejail" else None)
+
+    plan = sandbox_runner._linux_firejail_plan(("echo", "hi"), str(ws))
+
+    assert plan is not None
+    command = list(plan.command)
+    assert "--whitelist=/tmp" not in command
+    assert "--read-write=/tmp" not in command
+
+
 def test_firejail_plan_orders_operation_overrides_after_denies(monkeypatch, tmp_path):
     from src import sandbox_runner
 
