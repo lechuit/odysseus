@@ -221,38 +221,47 @@ def _workspace_paths(cwd: str) -> Tuple[List[str], List[str], List[str], List[st
     return (_unique_real(allow_read), _unique_real(allow_write), _unique_real(deny_read), _unique_real(deny_write))
 
 
+def _extra_paths(paths: Optional[Sequence[str]]) -> List[str]:
+    return _unique_real([str(path) for path in (paths or []) if str(path or "").strip()])
+
+
 def _sbpl_target(path: str) -> str:
     encoded = json.dumps(path)
     return encoded
 
 
-def _macos_sandbox_profile(cwd: str) -> str:
+def _sbpl_allow_lines(kind: str, path: str) -> List[str]:
+    encoded = _sbpl_target(path)
+    return [
+        f"(allow {kind} (literal {encoded}))",
+        f"(allow {kind} (subpath {encoded}))",
+    ]
+
+
+def _macos_sandbox_profile(
+    cwd: str,
+    *,
+    extra_allow_read: Optional[Sequence[str]] = None,
+    extra_allow_write: Optional[Sequence[str]] = None,
+) -> str:
     allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    extra_read = _extra_paths(extra_allow_read)
+    extra_write = _extra_paths(extra_allow_write)
     lines = [
         "(version 1)",
         "(deny default)",
         "(allow process*)",
         "(allow sysctl*)",
         "(allow signal)",
-        "(allow file-read-metadata)",
-        "(allow file-read-data (literal \"/dev/null\"))",
-        "(allow file-read-data (literal \"/dev/urandom\"))",
-        "(allow file-read-data (literal \"/dev/random\"))",
-        "(allow file-read* (subpath \"/System\"))",
-        "(allow file-read* (subpath \"/usr\"))",
-        "(allow file-read* (subpath \"/bin\"))",
-        "(allow file-read* (subpath \"/sbin\"))",
-        "(allow file-read* (subpath \"/Library\"))",
-        "(allow file-read* (subpath \"/opt/homebrew\"))",
-        "(allow file-read* (subpath \"/opt/local\"))",
-        "(allow file-read* (literal \"/etc\"))",
-        "(allow file-read* (subpath \"/etc\"))",
-        "(allow file-read* (subpath \"/private/etc\"))",
+        # Modern macOS processes often abort under sandbox-exec when launched
+        # with a narrow read profile. Keep reads broadly available for runtime
+        # startup, then apply explicit sensitive-path read denies below. Writes
+        # remain confined to the workspace/tmp unless per-operation approval
+        # grants a narrow extra write allowance.
+        "(allow file-read*)",
     ]
     if not _network_denied():
         lines.extend(["(allow network-outbound)", "(allow network-bind)"])
-    for path in allow_read:
-        lines.append(f"(allow file-read* (subpath {json.dumps(path)}))")
     for path in allow_write:
         lines.append(f"(allow file-write* (subpath {json.dumps(path)}))")
     for path in deny_read:
@@ -263,14 +272,28 @@ def _macos_sandbox_profile(cwd: str) -> str:
         encoded = _sbpl_target(path)
         lines.append(f"(deny file-write* (literal {encoded}))")
         lines.append(f"(deny file-write* (subpath {encoded}))")
+    # sandbox-exec applies later rules after earlier matching rules. These
+    # operation-scoped allowances are intentionally appended after default
+    # sensitive denies so a user-approved exact operation can read/write the
+    # reviewed path without making that exception persistent.
+    for path in extra_read:
+        lines.extend(_sbpl_allow_lines("file-read*", path))
+    for path in extra_write:
+        lines.extend(_sbpl_allow_lines("file-write*", path))
     return "\n".join(lines)
 
 
-def _macos_plan(command: Sequence[str], cwd: str) -> Optional[SandboxPlan]:
+def _macos_plan(
+    command: Sequence[str],
+    cwd: str,
+    *,
+    extra_allow_read: Optional[Sequence[str]] = None,
+    extra_allow_write: Optional[Sequence[str]] = None,
+) -> Optional[SandboxPlan]:
     sandbox_exec = shutil.which("sandbox-exec")
     if not sandbox_exec:
         return None
-    profile = _macos_sandbox_profile(cwd)
+    profile = _macos_sandbox_profile(cwd, extra_allow_read=extra_allow_read, extra_allow_write=extra_allow_write)
     fd, profile_path = tempfile.mkstemp(prefix="odysseus-sandbox-", suffix=".sb")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(profile)
@@ -278,11 +301,19 @@ def _macos_plan(command: Sequence[str], cwd: str) -> Optional[SandboxPlan]:
     return SandboxPlan(enabled=True, backend="sandbox-exec", command=wrapped, reason=profile_path, sandboxed=True)
 
 
-def _linux_bwrap_plan(command: Sequence[str], cwd: str) -> Optional[SandboxPlan]:
+def _linux_bwrap_plan(
+    command: Sequence[str],
+    cwd: str,
+    *,
+    extra_allow_read: Optional[Sequence[str]] = None,
+    extra_allow_write: Optional[Sequence[str]] = None,
+) -> Optional[SandboxPlan]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
         return None
     allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    allow_read = _unique_real([*allow_read, *_extra_paths(extra_allow_read)])
+    allow_write = _unique_real([*allow_write, *_extra_paths(extra_allow_write)])
     args: List[str] = [
         bwrap,
         "--die-with-parent",
@@ -321,11 +352,18 @@ def _linux_bwrap_plan(command: Sequence[str], cwd: str) -> Optional[SandboxPlan]
     return SandboxPlan(enabled=True, backend="bubblewrap", command=tuple(args), sandboxed=True)
 
 
-def _linux_firejail_plan(command: Sequence[str], cwd: str) -> Optional[SandboxPlan]:
+def _linux_firejail_plan(
+    command: Sequence[str],
+    cwd: str,
+    *,
+    extra_allow_read: Optional[Sequence[str]] = None,
+    extra_allow_write: Optional[Sequence[str]] = None,
+) -> Optional[SandboxPlan]:
     firejail = shutil.which("firejail")
     if not firejail:
         return None
     _, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    allow_write = _unique_real([*allow_write, *_extra_paths(extra_allow_write)])
     private = allow_write[0] if allow_write else cwd
     args_list = [firejail, "--quiet", f"--private={private}", "--noprofile"]
     if _network_denied():
@@ -340,7 +378,13 @@ def _linux_firejail_plan(command: Sequence[str], cwd: str) -> Optional[SandboxPl
     return SandboxPlan(enabled=True, backend="firejail", command=args, sandboxed=True)
 
 
-def build_sandbox_plan(command: Sequence[str], *, cwd: str) -> SandboxPlan:
+def build_sandbox_plan(
+    command: Sequence[str],
+    *,
+    cwd: str,
+    extra_allow_read: Optional[Sequence[str]] = None,
+    extra_allow_write: Optional[Sequence[str]] = None,
+) -> SandboxPlan:
     if not sandbox_enabled():
         return SandboxPlan(enabled=False, command=tuple(command), reason="sandbox disabled", sandboxed=False)
     cwd = os.path.realpath(cwd or os.getcwd())
@@ -348,9 +392,24 @@ def build_sandbox_plan(command: Sequence[str], *, cwd: str) -> SandboxPlan:
     plan: Optional[SandboxPlan] = None
     try:
         if system == "darwin":
-            plan = _macos_plan(command, cwd)
+            plan = _macos_plan(
+                command,
+                cwd,
+                extra_allow_read=extra_allow_read,
+                extra_allow_write=extra_allow_write,
+            )
         elif system == "linux":
-            plan = _linux_bwrap_plan(command, cwd) or _linux_firejail_plan(command, cwd)
+            plan = _linux_bwrap_plan(
+                command,
+                cwd,
+                extra_allow_read=extra_allow_read,
+                extra_allow_write=extra_allow_write,
+            ) or _linux_firejail_plan(
+                command,
+                cwd,
+                extra_allow_read=extra_allow_read,
+                extra_allow_write=extra_allow_write,
+            )
     except Exception as exc:
         logger.warning("Failed to build sandbox plan: %s", exc)
         plan = None

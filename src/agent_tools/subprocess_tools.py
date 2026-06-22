@@ -108,8 +108,14 @@ class BashTool:
         from src.sandbox_runner import build_sandbox_plan, fail_if_unavailable, sandbox_enabled
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
+        sandbox_allow = ctx.get("sandbox_allow") or {}
         cwd = agent_cwd()
-        plan = build_sandbox_plan(("/bin/sh", "-c", content), cwd=cwd)
+        plan = build_sandbox_plan(
+            ("/bin/sh", "-c", content),
+            cwd=cwd,
+            extra_allow_read=sandbox_allow.get("allow_read") or [],
+            extra_allow_write=sandbox_allow.get("allow_write") or [],
+        )
         record_sandbox_run(sandboxed=plan.sandboxed)
         if sandbox_enabled() and fail_if_unavailable() and not plan.sandboxed:
             return {"error": f"bash: sandbox unavailable: {plan.reason}", "exit_code": 126}
@@ -160,9 +166,15 @@ class PythonTool:
         from src.sandbox_runner import build_sandbox_plan, fail_if_unavailable, sandbox_enabled
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
+        sandbox_allow = ctx.get("sandbox_allow") or {}
         cwd = agent_cwd()
         command = ((sys.executable or "python"), "-I", "-c", content)
-        plan = build_sandbox_plan(command, cwd=cwd)
+        plan = build_sandbox_plan(
+            command,
+            cwd=cwd,
+            extra_allow_read=sandbox_allow.get("allow_read") or [],
+            extra_allow_write=sandbox_allow.get("allow_write") or [],
+        )
         record_sandbox_run(sandboxed=plan.sandboxed)
         if sandbox_enabled() and fail_if_unavailable() and not plan.sandboxed:
             return {"error": f"python: sandbox unavailable: {plan.reason}", "exit_code": 126}

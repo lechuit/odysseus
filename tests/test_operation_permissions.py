@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -526,6 +527,31 @@ def test_permission_deny_does_not_resume_write_tools(monkeypatch):
     assert consumed["reason"] in user_message
 
 
+def test_bash_sandbox_overrides_resolve_approved_paths(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_read = tmp_path / "outside.txt"
+    outside_write = tmp_path / "out.txt"
+    env_read = tmp_path / "env-read.txt"
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+    monkeypatch.setenv("ODYSSEUS_SANDBOX_TEST_READ", str(env_read))
+
+    command = (
+        "cat ../outside.txt && "
+        "echo ok > ../out.txt && "
+        "cat $ODYSSEUS_SANDBOX_TEST_READ && "
+        "cat $(pwd)/dynamic.txt"
+    )
+    overrides = op.sandbox_overrides_for_operation(op.Operation(tool="bash", content=command, command=command))
+
+    assert os.path.realpath(outside_read) in overrides["allow_read"]
+    assert os.path.realpath(env_read) in overrides["allow_read"]
+    assert os.path.realpath(outside_write.parent) in overrides["allow_write"]
+    assert not any("dynamic" in path for path in overrides["allow_read"])
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_block_denies_explicit_rule(monkeypatch):
     from src import operation_permissions as op
@@ -589,6 +615,50 @@ async def test_execute_tool_block_asks_for_bash_path_outside_workspace(monkeypat
     assert result["exit_code"] == 0
     assert result["ask_user"]["permission_request"] is True
     assert "outside the active workspace" in result["ask_user"]["question"]
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_block_passes_approved_bash_paths_to_sandbox(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.agent_tools import ToolBlock
+    from src.sandbox_runner import SandboxPlan
+    from src.tool_execution import execute_tool_block
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside-ok", encoding="utf-8")
+    command = "cat ../outside.txt"
+    captured = {}
+
+    def fake_build_sandbox_plan(cmd, *, cwd, extra_allow_read=None, extra_allow_write=None):
+        captured["command"] = cmd
+        captured["cwd"] = cwd
+        captured["extra_allow_read"] = list(extra_allow_read or [])
+        captured["extra_allow_write"] = list(extra_allow_write or [])
+        return SandboxPlan(enabled=False, command=tuple(cmd), reason="test", sandboxed=False)
+
+    monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
+    monkeypatch.setattr("src.tool_execution.get_mcp_manager", lambda: None)
+    monkeypatch.setattr("src.sandbox_runner.build_sandbox_plan", fake_build_sandbox_plan)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "allow", "tool": "bash", "match": "exact", "pattern": command})
+    ])
+
+    desc, result = await execute_tool_block(
+        ToolBlock("bash", command),
+        owner="admin",
+        session_id="s-bash-approved-sandbox",
+        workspace=str(workspace),
+    )
+
+    assert desc.startswith("bash:")
+    assert result["exit_code"] == 0
+    assert result["output"] == "outside-ok"
+    assert os.path.realpath(outside) in captured["extra_allow_read"]
+    assert captured["extra_allow_write"] == []
 
 
 @pytest.mark.asyncio

@@ -1124,6 +1124,91 @@ def _bash_path_candidates(raw_path: str) -> List[str]:
     return [os.path.realpath(expanded)]
 
 
+def _bash_sandbox_path_candidates(raw_path: str) -> List[str]:
+    """Resolve Bash path tokens for operation-scoped sandbox allowances.
+
+    This intentionally handles only static-ish spellings. Environment variables
+    such as `$HOME/file` can be expanded deterministically from the agent
+    process environment after the user approves the exact operation. Opaque
+    shell evaluation (`$(...)`, backticks, `${...}` parameter expansion,
+    zsh `=cmd`, Windows `%VAR%`) remains sandbox-confined.
+    """
+
+    raw = (raw_path or "").strip().strip("'\"")
+    if not raw or raw == "-":
+        return []
+    if raw.startswith("file://"):
+        raw = raw[len("file://") :]
+    if raw in _BASH_DEVICE_PATHS:
+        return []
+    if _BASH_COMMAND_SUBSTITUTION_RE.search(raw) or "%" in raw or raw.startswith("="):
+        return []
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    if "$" in expanded:
+        return []
+    if expanded in _BASH_DEVICE_PATHS:
+        return []
+    if _BASH_GLOB_CHARS.search(expanded):
+        before = re.split(r"[*?\[\]{}]", expanded, 1)[0]
+        expanded = os.path.dirname(before.rstrip("/")) or "."
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(_bash_agent_cwd(), expanded)
+    return [os.path.realpath(expanded)]
+
+
+def _sandbox_write_allow_path(resolved_path: str) -> str:
+    """Return the path a sandbox needs writable for a reviewed write target."""
+
+    path = os.path.realpath(os.path.expanduser(str(resolved_path or "")))
+    if not path:
+        return path
+    if os.path.isdir(path):
+        return path
+    return os.path.dirname(path) or path
+
+
+def sandbox_overrides_for_operation(operation: Mapping[str, Any] | Operation | None) -> Dict[str, List[str]]:
+    """Return per-operation sandbox read/write allowances.
+
+    These are used only after the operation-permission layer has returned an
+    explicit allow rule (for example after the user clicked "allow once").
+    They are not persisted and are intentionally narrow to paths that can be
+    resolved before executing the shell.
+    """
+
+    if isinstance(operation, Operation):
+        tool = operation.tool
+        command = operation.command or operation.content or ""
+    elif isinstance(operation, Mapping):
+        tool = str(operation.get("tool") or "")
+        command = str(operation.get("command") or operation.get("content") or "")
+    else:
+        tool = ""
+        command = ""
+
+    allow_read: List[str] = []
+    allow_write: List[str] = []
+    if _norm_tool(tool) != "bash" or not command:
+        return {"allow_read": allow_read, "allow_write": allow_write}
+
+    segments = _split_shell_segments(command)
+    if len(segments) > _MAX_BASH_SEGMENTS_FOR_PERMISSION:
+        return {"allow_read": allow_read, "allow_write": allow_write}
+
+    for segment in segments:
+        for raw_path, access in _bash_paths_for_segment(segment):
+            for resolved in _bash_sandbox_path_candidates(raw_path):
+                if access == "write":
+                    allow_write.append(_sandbox_write_allow_path(resolved))
+                else:
+                    allow_read.append(resolved)
+
+    return {
+        "allow_read": list(dict.fromkeys(path for path in allow_read if path)),
+        "allow_write": list(dict.fromkeys(path for path in allow_write if path)),
+    }
+
+
 def _bash_path_is_allowed(resolved_path: str) -> bool:
     try:
         path_norm = os.path.normcase(os.path.realpath(resolved_path))

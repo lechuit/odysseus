@@ -469,11 +469,12 @@ async def _call_mcp_tool(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    sandbox_allow: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """Route a legacy tool call through the MCP manager, with direct fallbacks."""
     mcp = get_mcp_manager()
     if not mcp:
-        return await _direct_fallback(tool, content, progress_cb=progress_cb) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
+        return await _direct_fallback(tool, content, progress_cb=progress_cb, sandbox_allow=sandbox_allow) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
 
     server_id, tool_name = _MCP_TOOL_MAP[tool]
     qualified = f"mcp__{server_id}__{tool_name}"
@@ -482,7 +483,7 @@ async def _call_mcp_tool(
 
     # If MCP server not connected, try direct fallback
     if isinstance(result, dict) and result.get("exit_code") == 1 and "not connected" in result.get("error", ""):
-        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb)
+        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb, sandbox_allow=sandbox_allow)
         if fallback:
             return fallback
 
@@ -540,6 +541,7 @@ async def _direct_fallback(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    sandbox_allow: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict]:
     _subproc_env = {
         **os.environ,
@@ -553,6 +555,7 @@ async def _direct_fallback(
         ctx = {
             "progress_cb": progress_cb,
             "subproc_env": _subproc_env,
+            "sandbox_allow": sandbox_allow or {},
         }
 
         from src.agent_tools import TOOL_HANDLERS
@@ -645,6 +648,8 @@ async def _execute_tool_block_impl(
 
     tool = block.tool_type
     content = block.content
+    permission_decision = None
+    sandbox_allow: Dict[str, Any] = {}
 
     # Misformatted tool call detection: model put JSON inside ```python``` (or
     # similar) without naming the tool. Common with MiniMax-style outputs.
@@ -750,6 +755,10 @@ async def _execute_tool_block_impl(
                     permission_decision.reason,
                 )
                 return desc, result
+            if permission_decision.behavior == "allow":
+                from src.operation_permissions import sandbox_overrides_for_operation
+
+                sandbox_allow = sandbox_overrides_for_operation(permission_decision.operation)
         except Exception as exc:
             logger.exception("Operation permission check failed for tool=%s: %s", tool, exc)
             return f"{tool}: BLOCKED", {
@@ -869,12 +878,12 @@ async def _execute_tool_block_impl(
     if tool in _MCP_TOOL_MAP:
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
-        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
+        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb, sandbox_allow=sandbox_allow)
     elif tool in ("grep", "glob", "ls", "get_workspace"):
         # Code-navigation tools — no MCP server; run the direct implementation.
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
-        result = await _direct_fallback(tool, content, progress_cb=progress_cb) \
+        result = await _direct_fallback(tool, content, progress_cb=progress_cb, sandbox_allow=sandbox_allow) \
             or {"error": f"{tool}: execution failed", "exit_code": 1}
     elif tool in ("create_document", "update_document", "edit_document",
                   "suggest_document", "manage_documents"):
