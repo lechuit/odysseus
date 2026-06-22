@@ -130,6 +130,29 @@ Local install: `/Users/gabrielpena/Library/Application Support/Odysseus`
   - before fix: `Denied operation: bash: cd /Users/gabielpena/Desktop/Personal/odysseus && git status`
   - after fix: `Denied operation: bash: cd /Users/gabrielpena/Desktop/Personal/odysseus && git status`
 
+### Sandbox network-deny approval override
+
+- Marker: `UI_SANDBOX_NETWORK_ALLOW_240622`
+- Current local sandbox setting:
+  - `enabled: true`
+  - `fail_if_unavailable: true`
+  - `network.deny: true`
+  - backend: `sandbox-exec`
+- Prompt: requested literal Bash command `curl -I --max-time 5 https://example.com`.
+- Expected: network access should ask while `network.deny` is enabled.
+- Observed UI:
+  - approval card appeared with reason `bash may use network access while sandbox network.deny is enabled`;
+  - user action was `Permitir una vez`;
+  - Bash replayed deterministically;
+  - final assistant message reported that HTTP headers were received and no error occurred.
+- Server log confirmation:
+  - `Operation permission requires approval tool=bash source=builtin reason=bash may use network access while sandbox network.deny is enabled`
+  - `Approved operation: bash: curl -I --max-time 5 https://example.com`
+  - `Tool executed: bash: curl -I --max-time 5 https://example.com -> exit_code=0`
+- Automation note:
+  - The UI detector initially waited for literal `HTTP/` in visible assistant text and timed out after 5 minutes.
+  - Manual state/log inspection showed the command had completed successfully; the model summarized the result instead of echoing headers verbatim.
+
 ## Important UI testing note
 
 The in-app textarea did not submit reliably with `Enter` during these tests. For future UI automation, after typing the prompt, click the visible send button.
@@ -138,10 +161,7 @@ The in-app textarea did not submit reliably with `Enter` during these tests. For
 
 These should be run after the sandbox runner changes are installed locally and the app is restarted.
 
-1. Network-deny sandbox override
-   - Enable sandbox with network denied.
-   - Try a Bash/Python network operation.
-   - Expected: approval card appears; if approved, only that reviewed operation receives a network override.
+No pending macOS UI checks remain from this sandbox batch.
 
 ## Regression found during sandbox status UI check
 
