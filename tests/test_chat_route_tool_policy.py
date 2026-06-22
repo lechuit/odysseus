@@ -149,6 +149,10 @@ def test_permission_resume_suppresses_unrelated_local_context():
     assert "suppress_local_context = True" in agent_source
     assert "if not suppress_local_context:" in agent_source
     assert 'tool_names |= {"ask_user", "update_plan"}' in agent_source
+    assert "_permission_resume_tool_replayed = False" in agent_source
+    assert "permission_resume_batch_done = True" in agent_source
+    assert "forcing tool-free final answer" in agent_source
+    assert "The approved operation has now executed" in agent_source
 
 
 # ── Functional tests of the disabled-tools logic ───────────────

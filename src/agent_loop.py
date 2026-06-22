@@ -2540,6 +2540,11 @@ async def stream_agent_loop(
     _call_freq: collections.Counter = collections.Counter()
     _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
+    # Permission-resume turns are special: the user's last message is a control
+    # label ("Permitir una vez", etc.), not a new task. Replay exactly one
+    # approved operation, then force a tool-free answer so the model cannot
+    # wander into unrelated remembered tasks with the approved tool still open.
+    _permission_resume_tool_replayed = False
     # Supervisor: how many times we've nudged the model after it announced
     # an action without emitting the tool call. Capped to prevent a model
     # that *can't* call the tool from looping forever.
@@ -3114,6 +3119,7 @@ async def stream_agent_loop(
         tool_results = []
         tool_result_texts = []  # plain text for native tool role messages
         budget_hit = False
+        permission_resume_batch_done = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
             if max_tool_calls > 0 and total_tool_calls >= max_tool_calls:
@@ -3450,6 +3456,14 @@ async def stream_agent_loop(
             tool_result_texts.append(formatted)
             if _pending_ask_user_event:
                 break
+            if _permission_resume_context and not _permission_resume_tool_replayed:
+                _permission_resume_tool_replayed = True
+                permission_resume_batch_done = True
+                logger.info(
+                    "[operation-permissions] replayed approved %s; forcing tool-free final answer",
+                    block.tool_type,
+                )
+                break
 
         # If budget was hit, stop the loop
         if budget_hit:
@@ -3466,6 +3480,16 @@ async def stream_agent_loop(
         _append_tool_results(messages, round_response, native_tool_calls,
                              tool_results, tool_result_texts, used_native, round_num,
                              round_reasoning=round_reasoning)
+        if permission_resume_batch_done:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "The approved operation has now executed. Do not call any "
+                    "more tools in this permission-resume turn. Answer the "
+                    "original request using only the approved tool result above."
+                ),
+            })
+            _force_answer = True
 
         # Emit agent_step event
         yield (
