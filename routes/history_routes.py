@@ -20,6 +20,17 @@ from routes.session_routes import (
 logger = logging.getLogger(__name__)
 
 
+def _clear_active_context_boundary(db, session_id: str, session=None) -> None:
+    """Clear model-context boundary metadata after destructive history edits."""
+    if session is not None:
+        session.active_context_boundary_message_id = None
+        session.active_context_summary = None
+    db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
+    if db_session:
+        db_session.active_context_boundary_message_id = None
+        db_session.active_context_summary = None
+
+
 def _merge_continue_rows_to_delete(db_messages, db1, db2):
     """DB rows to delete when merging the last two assistant messages.
 
@@ -201,6 +212,10 @@ def setup_history_routes(session_manager) -> APIRouter:
                 db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
                 if db_session:
                     db_session.message_count = len(session.history)
+                    db_session.active_context_boundary_message_id = None
+                    db_session.active_context_summary = None
+                    session.active_context_boundary_message_id = None
+                    session.active_context_summary = None
                     from datetime import datetime, timezone
                     db_session.updated_at = datetime.now(timezone.utc)
 
@@ -255,6 +270,7 @@ def setup_history_routes(session_manager) -> APIRouter:
                             hmsg['metadata']['edited'] = True
                         break
 
+                _clear_active_context_boundary(db, session_id, session)
                 db.commit()
                 return {"status": "ok"}
             finally:
@@ -451,6 +467,7 @@ def setup_history_routes(session_manager) -> APIRouter:
                     for _row in _merge_continue_rows_to_delete(db_messages, db1, db2):
                         db.delete(_row)
 
+                    _clear_active_context_boundary(db, session_id, session)
                     db.commit()
             finally:
                 db.close()
@@ -597,6 +614,8 @@ def setup_history_routes(session_manager) -> APIRouter:
             new_history = [system_summary, summary_msg] + list(recent)
             session.history = new_history
             session.message_count = len(session.history)
+            session.active_context_boundary_message_id = None
+            session.active_context_summary = None
             logger.info(f"Compact: session {session_id} history now has {len(session.history)} messages (was {msg_count_before})")
 
             # Update DB: delete old messages, insert summary
@@ -638,6 +657,8 @@ def setup_history_routes(session_manager) -> APIRouter:
                 db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
                 if db_session:
                     db_session.message_count = len(session.history)
+                    db_session.active_context_boundary_message_id = None
+                    db_session.active_context_summary = None
                     db_session.updated_at = datetime.now(timezone.utc)
                 db.commit()
             finally:

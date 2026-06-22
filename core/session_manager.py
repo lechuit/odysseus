@@ -120,6 +120,10 @@ class SessionManager:
             history=[],
             owner=getattr(db_session, "owner", None),
             is_important=getattr(db_session, "is_important", False) or False,
+            active_context_boundary_message_id=getattr(
+                db_session, "active_context_boundary_message_id", None
+            ),
+            active_context_summary=getattr(db_session, "active_context_summary", None),
         )
         session.message_count = getattr(db_session, "message_count", 0) or 0
         return session
@@ -178,6 +182,10 @@ class SessionManager:
             history=history,
             owner=getattr(db_session, 'owner', None),
             is_important=getattr(db_session, 'is_important', False) or False,
+            active_context_boundary_message_id=getattr(
+                db_session, "active_context_boundary_message_id", None
+            ),
+            active_context_summary=getattr(db_session, "active_context_summary", None),
         )
 
         session.message_count = getattr(db_session, 'message_count', len(history))
@@ -288,6 +296,8 @@ class SessionManager:
                 # defaults to keep_count=10 on a short session); message_count must
                 # track the rows that actually remain, not the requested cap.
                 db_session.message_count = min(keep_count, len(db_messages))
+                db_session.active_context_boundary_message_id = None
+                db_session.active_context_summary = None
                 db_session.updated_at = datetime.now(timezone.utc)
 
             db.commit()
@@ -295,6 +305,8 @@ class SessionManager:
             # Update in-memory
             session.history = session.history[:keep_count]
             session._history = session.history
+            session.active_context_boundary_message_id = None
+            session.active_context_summary = None
 
             logger.info(f"Truncated session {session_id} to {keep_count} messages")
             return True
@@ -339,6 +351,8 @@ class SessionManager:
             db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
             if db_session:
                 db_session.message_count = len(messages)
+                db_session.active_context_boundary_message_id = None
+                db_session.active_context_summary = None
                 db_session.updated_at = now
                 db_session.last_accessed = now
                 db_session.last_message_at = now
@@ -347,6 +361,8 @@ class SessionManager:
             session.history = list(messages)
             session._history = session.history
             session.message_count = len(messages)
+            session.active_context_boundary_message_id = None
+            session.active_context_summary = None
             logger.info("Replaced session %s history with %d messages", session_id, len(messages))
             return True
         except Exception as e:

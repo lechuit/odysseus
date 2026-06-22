@@ -13,7 +13,11 @@ from core.database import SessionLocal
 from core.database import Session as DBSession, ModelEndpoint
 from src.llm_core import normalize_model_id
 from src.endpoint_resolver import normalize_base
-from src.context_compactor import maybe_compact, trim_for_context
+from src.context_compactor import (
+    maybe_compact,
+    project_active_context_messages,
+    trim_for_context,
+)
 from src.auth_helpers import get_current_user
 from src.memory_policy import (
     auto_memory_enabled_from_prefs,
@@ -666,8 +670,11 @@ async def build_chat_context(
     if norm:
         sess.model = norm
 
-    # Build messages
-    messages = preface + sess.get_context_messages()
+    # Build messages.  The session/DB history remains complete, but the model
+    # receives only the active context projection when automatic compaction has
+    # established a boundary.
+    history_messages = project_active_context_messages(sess.get_context_messages(), sess)
+    messages = preface + history_messages
 
     # Current date/time — injected as a standalone *user*-role context message
     # placed immediately before the latest user turn, NOT folded into the

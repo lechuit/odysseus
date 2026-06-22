@@ -24,6 +24,7 @@ from src.context_compactor import (
     SUMMARY_MAX_TOKENS,
     _content_as_text,
     maybe_compact,
+    project_active_context_messages,
     trim_for_context,
 )
 
@@ -110,6 +111,42 @@ class TestContentAsText:
 
     def test_unknown_type_returns_empty(self):
         assert _content_as_text(42) == ""
+
+
+class TestActiveContextBoundaryProjection:
+    def test_projects_summary_plus_tail_from_boundary(self):
+        messages = [
+            {"role": "user", "content": "old", "metadata": {"_db_id": "m1"}},
+            {"role": "assistant", "content": "old reply", "metadata": {"_db_id": "m2"}},
+            {"role": "user", "content": "kept", "metadata": {"_db_id": "m3"}},
+            {"role": "assistant", "content": "kept reply", "metadata": {"_db_id": "m4"}},
+        ]
+        session = type("FakeSession", (), {
+            "id": "s1",
+            "active_context_boundary_message_id": "m3",
+            "active_context_summary": "summary of m1 and m2",
+        })()
+
+        projected = project_active_context_messages(messages, session)
+
+        assert len(projected) == 3
+        assert projected[0]["role"] == "user"
+        assert "summary of m1 and m2" in projected[0]["content"]
+        assert projected[0]["metadata"]["trusted"] is False
+        assert [m["content"] for m in projected[1:]] == ["kept", "kept reply"]
+
+    def test_missing_boundary_fails_open_to_full_history(self):
+        messages = [
+            {"role": "user", "content": "old", "metadata": {"_db_id": "m1"}},
+            {"role": "assistant", "content": "reply", "metadata": {"_db_id": "m2"}},
+        ]
+        session = type("FakeSession", (), {
+            "id": "s1",
+            "active_context_boundary_message_id": "missing",
+            "active_context_summary": "summary",
+        })()
+
+        assert project_active_context_messages(messages, session) is messages
 
 
 class TestMaybeCompactFourthMessage:
@@ -257,6 +294,52 @@ class TestMaybeCompactFourthMessage:
                 for i, m in enumerate(compacted_messages)
             )
         )
+
+    def test_compaction_records_active_boundary_without_rewriting_history(self):
+        messages = [
+            {"role": "system", "content": "You are a helpful agent. " * 200},
+            {"role": "user", "content": "old user", "metadata": {"_db_id": "m1"}},
+            {"role": "assistant", "content": "old assistant", "metadata": {"_db_id": "m2"}},
+            {"role": "user", "content": "middle", "metadata": {"_db_id": "m3"}},
+            {"role": "assistant", "content": "middle reply", "metadata": {"_db_id": "m4"}},
+            {"role": "user", "content": "latest", "metadata": {"_db_id": "m5"}},
+            {"role": "assistant", "content": "latest reply", "metadata": {"_db_id": "m6"}},
+        ]
+        session = type("FakeSession", (), {})()
+        session.id = "s1"
+        session.history = ["full", "visible", "history"]
+        before_history = list(session.history)
+
+        orig_ctx = cc.get_context_length
+        orig_call = cc.llm_call_async
+        orig_resolve = cc.resolve_endpoint
+
+        async def _fake_summary(*a, **k):
+            return "compact summary text"
+
+        cc.get_context_length = lambda url, model: 500
+        cc.llm_call_async = _fake_summary
+        cc.resolve_endpoint = lambda which, owner=None: (None, None, None)
+        try:
+            compacted_messages, _context_length, was_compacted = asyncio.run(
+                maybe_compact(
+                    session=session,
+                    endpoint_url="http://local/v1/chat/completions",
+                    model="local-model",
+                    messages=list(messages),
+                    headers={},
+                )
+            )
+        finally:
+            cc.get_context_length = orig_ctx
+            cc.llm_call_async = orig_call
+            cc.resolve_endpoint = orig_resolve
+
+        assert was_compacted is True
+        assert "compact summary text" in compacted_messages[1]["content"]
+        assert session.active_context_boundary_message_id == "m4"
+        assert session.active_context_summary == "compact summary text"
+        assert session.history == before_history
 
     def test_handles_multimodal_list_content(self):
         messages = self._four_turn_history_with_tool_call()

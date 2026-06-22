@@ -129,6 +129,12 @@ class Session(TimestampMixin, Base):
     total_output_tokens = Column(Integer, default=0)
     mode = Column(String, nullable=True)  # 'agent', 'chat', or 'research'
     crew_member_id = Column(String, nullable=True)  # links to crew_members.id
+    # Non-destructive model-context projection. The full chat history remains
+    # in chat_messages for UI/search/export; these fields mark the first
+    # message kept in the model-facing active context plus the summary that
+    # represents older messages.
+    active_context_boundary_message_id = Column(String, nullable=True)
+    active_context_summary = Column(Text, nullable=True)
 
     # Relationship to chat messages
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
@@ -1539,6 +1545,26 @@ def _migrate_add_crew_member_id():
     except Exception as e:
         logging.getLogger(__name__).warning(f"crew_member_id migration: {e}")
 
+
+def _migrate_add_active_context_boundary_columns():
+    """Add non-destructive active context boundary columns to sessions."""
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sessions)"))]
+            changed = False
+            if "active_context_boundary_message_id" not in cols:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN active_context_boundary_message_id TEXT"))
+                changed = True
+            if "active_context_summary" not in cols:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN active_context_summary TEXT"))
+                changed = True
+            if changed:
+                conn.commit()
+                logging.getLogger(__name__).info("Added active context boundary columns to sessions")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"active context boundary migration: {e}")
+
+
 def _migrate_add_assistant_columns():
     """Add is_default_assistant + timezone columns to crew_members for the personal-assistant feature."""
     try:
@@ -1778,6 +1804,7 @@ def init_db():
     _migrate_add_notifications_enabled()
     _migrate_drop_ping_notes_tasks()
     _migrate_add_crew_member_id()
+    _migrate_add_active_context_boundary_columns()
     _migrate_add_assistant_columns()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()

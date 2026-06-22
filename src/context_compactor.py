@@ -63,6 +63,83 @@ MICROCOMPACT_COMPACTABLE_TOOLS = {
     "web_search",
     "web_fetch",
 }
+ACTIVE_CONTEXT_SUMMARY_LABEL = "conversation summary — earlier messages were compacted"
+
+
+def _message_db_id(msg: Dict[str, Any]) -> str:
+    """Return the persisted DB id carried by a context message, if any."""
+    if not isinstance(msg, dict):
+        return ""
+    meta = msg.get("metadata")
+    if isinstance(meta, dict) and meta.get("_db_id"):
+        return str(meta.get("_db_id"))
+    if msg.get("_db_id"):
+        return str(msg.get("_db_id"))
+    return ""
+
+
+def project_active_context_messages(messages: List[Dict], session: Any = None) -> List[Dict]:
+    """Return the model-facing active context slice for a session.
+
+    The full DB/session history remains intact for UI/search/export. This is
+    the SQLite-backed equivalent of the reference project's
+    ``getMessagesAfterCompactBoundary()``: when a session has an active
+    boundary, the model sees a compact summary plus messages from the boundary
+    message onward. If the boundary no longer resolves, fail open to the full
+    history rather than hiding messages.
+    """
+    boundary_id = str(getattr(session, "active_context_boundary_message_id", "") or "")
+    summary = str(getattr(session, "active_context_summary", "") or "")
+    if not boundary_id or not summary:
+        return messages
+
+    boundary_index = -1
+    for i, msg in enumerate(messages or []):
+        if _message_db_id(msg) == boundary_id:
+            boundary_index = i
+            break
+    if boundary_index < 0:
+        logger.warning(
+            "Active context boundary %s was not found in session %s; using full history",
+            boundary_id,
+            getattr(session, "id", "<unknown>"),
+        )
+        return messages
+
+    summary_msg = untrusted_context_message(
+        ACTIVE_CONTEXT_SUMMARY_LABEL,
+        f"[Conversation summary — earlier messages were compacted]\n{summary}",
+    )
+    return _sanitize_tool_messages([summary_msg] + list(messages[boundary_index:]))
+
+
+def _persist_active_context_boundary(session: Any, boundary_message_id: str, summary: str) -> None:
+    """Persist the active context boundary on the session row, best effort."""
+    if not session or not boundary_message_id or not summary:
+        return
+
+    session.active_context_boundary_message_id = str(boundary_message_id)
+    session.active_context_summary = str(summary)
+
+    session_id = getattr(session, "id", None)
+    if not session_id:
+        return
+    try:
+        from core.database import SessionLocal, Session as DbSession
+
+        db = SessionLocal()
+        try:
+            row = db.query(DbSession).filter(DbSession.id == session_id).first()
+            if row is not None:
+                row.active_context_boundary_message_id = str(boundary_message_id)
+                row.active_context_summary = str(summary)
+                db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        # The in-memory session still carries the boundary for this process; DB
+        # persistence is best-effort so context compaction never breaks a reply.
+        logger.warning("Failed to persist active context boundary: %s", e)
 
 # Cursor-style self-summarization prompt — produces structured, dense summaries
 SELF_SUMMARY_SYSTEM_PROMPT = """You are summarizing a conversation to preserve context after compaction. Produce a structured summary that lets the conversation continue seamlessly.
@@ -737,11 +814,19 @@ async def maybe_compact(
     # untrusted user-role context avoids elevating that text above the real
     # preset/system prompt while still letting the model use it as reference.
     summary_msg = untrusted_context_message(
-        "conversation summary — earlier messages were compacted",
+        ACTIVE_CONTEXT_SUMMARY_LABEL,
         f"[Conversation summary — earlier messages were compacted]\n{summary}",
     )
 
     compacted = _sanitize_tool_messages(system_msgs + [summary_msg] + recent)
+
+    boundary_message_id = ""
+    for msg in recent:
+        boundary_message_id = _message_db_id(msg)
+        if boundary_message_id:
+            break
+    if boundary_message_id:
+        _persist_active_context_boundary(session, boundary_message_id, summary)
 
     new_used = estimate_tokens(compacted)
     logger.info(
