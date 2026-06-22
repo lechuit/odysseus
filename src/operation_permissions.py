@@ -1970,33 +1970,47 @@ def permission_denied_user_message(consumed: Mapping[str, Any]) -> str:
 
 def permission_ask_payload(decision: PermissionDecision) -> Dict[str, Any]:
     op = decision.operation or Operation(tool="unknown")
+    operation_description = op.description or op.tool
+    reason = decision.reason or "regla de permisos"
     question = (
         "Esta operación requiere aprobación antes de ejecutarse:\n\n"
-        f"{op.description or op.tool}\n\n"
-        f"Motivo: {decision.reason or 'regla de permisos'}"
+        f"{operation_description}\n\n"
+        f"Motivo: {reason}"
     )
     return {
         "question": question,
         "options": [
             {
+                "action": "allow_once",
                 "label": PERMISSION_RESPONSE_LABELS["allow_once"],
                 "description": "Ejecuta solo esta operación una vez.",
             },
             {
+                "action": "allow_session",
                 "label": PERMISSION_RESPONSE_LABELS["allow_session"],
                 "description": "Permite esta misma operación durante esta sesión.",
             },
             {
+                "action": "allow_always",
                 "label": PERMISSION_RESPONSE_LABELS["allow_always"],
                 "description": "Guarda una regla persistente para esta operación exacta.",
             },
             {
+                "action": "deny",
                 "label": PERMISSION_RESPONSE_LABELS["deny"],
                 "description": "No ejecutar esta operación.",
             },
         ],
         "multi": False,
         "permission_request": True,
+        "permission": {
+            "title": "Aprobación requerida",
+            "tool": op.tool,
+            "operation": operation_description,
+            "reason": reason,
+            "severity": decision.severity or "normal",
+            "source": decision.source or "default",
+        },
     }
 
 

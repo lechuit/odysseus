@@ -2001,35 +2001,127 @@ export function renderAskUserCard(payload, options) {
   const permissionRequest = !!aq.permission_request;
   card.className = permissionRequest ? 'ask-user-card ask-user-card-permission' : 'ask-user-card';
   card.setAttribute('role', 'group');
+  if (permissionRequest) card.setAttribute('aria-live', 'polite');
   card.tabIndex = -1;
   const multi = !!aq.multi;
   const emojiText = (value) => svgifyEmoji(uiModule.esc(String(value)));
   let answered = false;
 
-  const head = document.createElement('div');
-  head.className = 'ask-user-head';
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'modal-close ask-user-close';
-  closeBtn.setAttribute('aria-label', 'Dismiss question');
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', () => {
-    card.remove();
-    const input = uiModule.el('message');
-    if (input) input.focus();
-  });
-  head.appendChild(closeBtn);
-  card.appendChild(head);
+  const normalizePermissionDetails = () => {
+    const details = (aq.permission && typeof aq.permission === 'object') ? aq.permission : {};
+    const questionText = String(aq.question || '');
+    const fallback = { operation: '', reason: '' };
+    const reasonMatch = questionText.match(/Motivo:\s*([\s\S]+)$/i);
+    if (reasonMatch) fallback.reason = reasonMatch[1].trim();
+    const beforeReason = questionText.replace(/\n?Motivo:[\s\S]*$/i, '');
+    const lines = beforeReason.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length) fallback.operation = lines[lines.length - 1];
+    return {
+      title: String(details.title || 'Aprobación requerida'),
+      tool: String(details.tool || ''),
+      operation: String(details.operation || fallback.operation || aq.question || ''),
+      reason: String(details.reason || fallback.reason || 'Regla de permisos'),
+      severity: String(details.severity || 'normal'),
+      source: String(details.source || ''),
+    };
+  };
 
-  const question = document.createElement('div');
-  question.className = 'ask-user-question';
-  question.id = `ask-user-q-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
-  question.innerHTML = emojiText(aq.question);
-  card.appendChild(question);
-  card.setAttribute('aria-labelledby', question.id);
+  if (permissionRequest) {
+    const details = normalizePermissionDetails();
+    const titleId = `ask-user-permission-title-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    const descId = `ask-user-permission-desc-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    const shell = document.createElement('div');
+    shell.className = 'ask-user-permission-shell';
+
+    const intro = document.createElement('div');
+    intro.className = 'ask-user-permission-intro';
+    const icon = document.createElement('span');
+    icon.className = 'ask-user-permission-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '!';
+    intro.appendChild(icon);
+
+    const introCopy = document.createElement('div');
+    introCopy.className = 'ask-user-permission-copy';
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'ask-user-permission-eyebrow';
+    eyebrow.textContent = details.title;
+    introCopy.appendChild(eyebrow);
+    const title = document.createElement('div');
+    title.className = 'ask-user-permission-title';
+    title.id = titleId;
+    title.textContent = 'Revisa esta operación antes de continuar';
+    introCopy.appendChild(title);
+    const subtitle = document.createElement('div');
+    subtitle.className = 'ask-user-permission-subtitle';
+    subtitle.id = descId;
+    subtitle.textContent = 'Odysseus pausó la ejecución hasta que elijas el alcance del permiso.';
+    introCopy.appendChild(subtitle);
+    intro.appendChild(introCopy);
+
+    if (details.tool) {
+      const toolBadge = document.createElement('span');
+      toolBadge.className = 'ask-user-permission-tool';
+      toolBadge.textContent = details.tool;
+      intro.appendChild(toolBadge);
+    }
+    shell.appendChild(intro);
+
+    const detailBox = document.createElement('div');
+    detailBox.className = 'ask-user-permission-detail';
+    const operationRow = document.createElement('div');
+    operationRow.className = 'ask-user-permission-row';
+    const operationLabel = document.createElement('span');
+    operationLabel.className = 'ask-user-permission-label';
+    operationLabel.textContent = 'Operación';
+    operationRow.appendChild(operationLabel);
+    const operationValue = document.createElement('code');
+    operationValue.className = 'ask-user-permission-value ask-user-permission-operation';
+    operationValue.textContent = details.operation;
+    operationRow.appendChild(operationValue);
+    detailBox.appendChild(operationRow);
+
+    const reasonRow = document.createElement('div');
+    reasonRow.className = 'ask-user-permission-row';
+    const reasonLabel = document.createElement('span');
+    reasonLabel.className = 'ask-user-permission-label';
+    reasonLabel.textContent = 'Motivo';
+    reasonRow.appendChild(reasonLabel);
+    const reasonValue = document.createElement('span');
+    reasonValue.className = 'ask-user-permission-value';
+    reasonValue.textContent = details.reason;
+    reasonRow.appendChild(reasonValue);
+    detailBox.appendChild(reasonRow);
+    shell.appendChild(detailBox);
+    card.appendChild(shell);
+    card.setAttribute('aria-labelledby', titleId);
+    card.setAttribute('aria-describedby', descId);
+  } else {
+    const head = document.createElement('div');
+    head.className = 'ask-user-head';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'modal-close ask-user-close';
+    closeBtn.setAttribute('aria-label', 'Dismiss question');
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => {
+      card.remove();
+      const input = uiModule.el('message');
+      if (input) input.focus();
+    });
+    head.appendChild(closeBtn);
+    card.appendChild(head);
+
+    const question = document.createElement('div');
+    question.className = 'ask-user-question';
+    question.id = `ask-user-q-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+    question.innerHTML = emojiText(aq.question);
+    card.appendChild(question);
+    card.setAttribute('aria-labelledby', question.id);
+  }
 
   const list = document.createElement('div');
-  list.className = 'ask-user-options';
+  list.className = permissionRequest ? 'ask-user-options ask-user-permission-options' : 'ask-user-options';
   card.appendChild(list);
 
   const isVisibleControl = (el) => {
@@ -2091,8 +2183,19 @@ export function renderAskUserCard(payload, options) {
     const label = (opt && opt.label) ? String(opt.label) : String(opt || '');
     if (!label) return;
     const description = (opt && opt.description) ? String(opt.description) : '';
+    const action = String((opt && opt.action) || '')
+      .trim()
+      .toLowerCase()
+      .replace(/_/g, '-');
     const row = document.createElement(multi ? 'label' : 'button');
     row.className = 'ask-user-option';
+    if (permissionRequest) {
+      row.classList.add('ask-user-option-permission');
+      if (action) {
+        row.classList.add(`ask-user-option-${action}`);
+        row.dataset.permissionAction = action;
+      }
+    }
     if (multi) {
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';

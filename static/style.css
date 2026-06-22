@@ -37474,8 +37474,16 @@ body.theme-frosted .modal {
    visible outline on the whole card box. */
 .ask-user-card:focus { outline: none; }
 .ask-user-card-permission {
-  border-color: color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent, var(--red)) 7%, var(--panel));
+  max-width: 760px;
+  padding: 0;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent, var(--red)) 42%, var(--border));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent, var(--red)) 10%, var(--panel)),
+      color-mix(in srgb, var(--accent, var(--red)) 5%, var(--panel))
+    );
 }
 .ask-user-head {
   display: flex;
@@ -37514,15 +37522,140 @@ body.theme-frosted .modal {
   font-size: 13px;
   line-height: 1.35;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
 }
 .ask-user-option:hover:not(:disabled) {
   border-color: var(--accent, var(--red));
   background: color-mix(in srgb, var(--accent, var(--red)) 10%, var(--panel));
 }
+.ask-user-option:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, var(--red)) 78%, white);
+  outline-offset: 2px;
+}
+.ask-user-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
 .ask-user-option:disabled { cursor: default; }
+.ask-user-permission-shell {
+  padding: 14px 16px 12px;
+}
+.ask-user-permission-intro {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: flex-start;
+}
+.ask-user-permission-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-top: 1px;
+  border: 1px solid color-mix(in srgb, var(--accent, var(--red)) 55%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, var(--red)) 16%, transparent);
+  color: var(--fg);
+  font-weight: 700;
+  line-height: 1;
+}
+.ask-user-permission-copy {
+  min-width: 0;
+}
+.ask-user-permission-eyebrow {
+  margin-bottom: 2px;
+  color: color-mix(in srgb, var(--accent, var(--red)) 65%, var(--fg));
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.ask-user-permission-title {
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+.ask-user-permission-subtitle {
+  margin-top: 4px;
+  max-width: 62ch;
+  color: color-mix(in srgb, var(--fg) 72%, var(--panel));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ask-user-permission-tool {
+  max-width: 180px;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent, var(--red)) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 78%, var(--bg));
+  color: color-mix(in srgb, var(--fg) 88%, white);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-user-permission-detail {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+}
+.ask-user-permission-row {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 10px;
+}
+.ask-user-permission-row + .ask-user-permission-row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+.ask-user-permission-label {
+  color: color-mix(in srgb, var(--fg) 55%, var(--panel));
+  font-size: 11px;
+  font-weight: 700;
+}
+.ask-user-permission-value {
+  min-width: 0;
+  color: color-mix(in srgb, var(--fg) 88%, white);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.ask-user-permission-operation {
+  display: block;
+  max-height: 8.5em;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.ask-user-permission-options {
+  padding: 0 16px 16px;
+}
 .ask-user-card-permission .ask-user-option {
   min-height: 48px;
+  border-color: color-mix(in srgb, var(--border) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+}
+.ask-user-card-permission .ask-user-option:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent, var(--red)) 65%, var(--border));
+  background: color-mix(in srgb, var(--accent, var(--red)) 11%, var(--panel));
+}
+.ask-user-card-permission .ask-user-option-allow-once {
+  border-color: color-mix(in srgb, var(--green, #50fa7b) 45%, var(--border));
+}
+.ask-user-card-permission .ask-user-option-allow-once:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--green, #50fa7b) 72%, var(--border));
+  background: color-mix(in srgb, var(--green, #50fa7b) 10%, var(--panel));
+}
+.ask-user-card-permission .ask-user-option-deny {
+  border-color: color-mix(in srgb, var(--red) 44%, var(--border));
+}
+.ask-user-card-permission .ask-user-option-deny:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--red) 70%, var(--border));
+  background: color-mix(in srgb, var(--red) 11%, var(--panel));
 }
 .ask-user-option > input {
   flex: 0 0 auto;
@@ -37570,6 +37703,29 @@ body.theme-frosted .modal {
   }
   .ask-user-other { flex-direction: column; }
   .ask-user-other-send { width: 100%; min-height: 44px; }
+  .ask-user-permission-intro {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .ask-user-permission-tool {
+    grid-column: 2;
+    max-width: 100%;
+    justify-self: flex-start;
+  }
+  .ask-user-permission-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .ask-user-permission-options {
+    padding: 0 12px 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ask-user-option {
+    transition: background 0.01ms linear, border-color 0.01ms linear;
+  }
+  .ask-user-option:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 /* ── Workspace picker ───────────────────────────────────────────── */

@@ -778,6 +778,9 @@ async def test_execute_tool_block_asks_for_builtin_bash_risk(monkeypatch):
     assert desc == "bash: permission required"
     assert result["exit_code"] == 0
     assert result["ask_user"]["permission_request"] is True
+    assert result["ask_user"]["permission"]["tool"] == "bash"
+    assert result["ask_user"]["permission"]["operation"] == "bash: git push origin main"
+    assert result["ask_user"]["options"][0]["action"] == "allow_once"
 
 
 @pytest.mark.asyncio
@@ -806,6 +809,7 @@ async def test_execute_tool_block_asks_for_bash_path_outside_workspace(monkeypat
     assert result["exit_code"] == 0
     assert result["ask_user"]["permission_request"] is True
     assert "outside the active workspace" in result["ask_user"]["question"]
+    assert "outside the active workspace" in result["ask_user"]["permission"]["reason"]
 
 
 @pytest.mark.asyncio

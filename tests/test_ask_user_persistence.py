@@ -114,11 +114,16 @@ def test_permission_cards_hide_free_text_and_guard_double_clicks():
     styles = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
 
     assert "const permissionRequest = !!aq.permission_request" in renderer
+    assert "normalizePermissionDetails" in renderer
+    assert "ask-user-permission-title" in renderer
+    assert "ask-user-permission-operation" in renderer
     assert "ask-user-card-permission" in renderer
     assert "let answered = false" in renderer
     assert "if (!text || answered) return" in renderer
     assert "if (!permissionRequest) {" in renderer
     assert ".ask-user-card-permission {" in styles
+    assert ".ask-user-permission-detail {" in styles
+    assert ".ask-user-option:focus-visible" in styles
 
 
 def test_ask_user_choices_submit_through_visible_composer():
