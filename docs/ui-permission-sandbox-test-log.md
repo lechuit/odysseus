@@ -234,6 +234,25 @@ No pending macOS UI checks remain from this sandbox batch.
 - Remaining real-host check:
   - In the UI on a Linux host, run strict single-tool `manage_settings` with `{"action":"sandbox_self_test"}` and confirm `overall_passed=true`, `passed_count=5`, and `selected_backend` is `bubblewrap` or `firejail`.
 
+### UI self-test after local install sync
+
+- Marker: `UI_SANDBOX_SELF_TEST_C143B79`
+- Local install commit: `c143b79`
+- Prompt: strict single-tool `manage_settings` with `{"action":"sandbox_self_test"}`, submitted by clicking the visible Send button.
+- Result:
+  - clean chat created from the composer `+ New` button;
+  - one visible `MANAGE_SETTINGS done` tool card;
+  - assistant returned JSON:
+    - `overall_passed: true`
+    - `skipped: false`
+    - `passed_count: 5`
+    - `total_count: 5`
+    - `selected_backend: sandbox-exec`
+    - `platform: darwin`
+    - `failed_checks: []`
+- UI automation note:
+  - The visible transcript can retain a `Thinking` label even after the final answer is rendered; validation keyed off the final JSON and absence of `Generating response`.
+
 ### UI smoke after local install sync
 
 - Marker: `UI_SANDBOX_STATUS_7159FBE`
