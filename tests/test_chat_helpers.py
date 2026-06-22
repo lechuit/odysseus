@@ -1,8 +1,12 @@
 import pytest
 from fastapi import HTTPException
+from types import SimpleNamespace
 
 from routes.chat_helpers import (
+    PresetInfo,
+    PreprocessedMessage,
     _enforce_chat_privileges,
+    build_chat_context,
     clean_thinking_for_save,
     needs_auto_name,
     save_assistant_response,
@@ -220,7 +224,6 @@ def test_save_assistant_response_preserves_actual_and_requested_model():
     assert sess.history[-1].metadata["model"] == "actual-model"
 
 
-from types import SimpleNamespace
 from routes.chat_helpers import _session_is_research_spinoff
 
 
@@ -257,6 +260,86 @@ def test_non_spinoff_plain_session_is_false():
 def test_metadata_on_non_system_message_ignored():
     sess = SimpleNamespace(history=[_SpinMsg("user", {"research_spinoff_from": "rp-3"})])
     assert _session_is_research_spinoff(sess) is False
+
+
+@pytest.mark.asyncio
+async def test_build_chat_context_uses_active_boundary_projection(monkeypatch):
+    history = [
+        {"role": "user", "content": "old secret marker", "metadata": {"_db_id": "m1"}},
+        {"role": "assistant", "content": "old reply", "metadata": {"_db_id": "m2"}},
+        {"role": "user", "content": "tail marker", "metadata": {"_db_id": "m3"}},
+        {"role": "assistant", "content": "tail reply", "metadata": {"_db_id": "m4"}},
+    ]
+    sess = SimpleNamespace(
+        endpoint_url="http://local/v1",
+        model="local-model",
+        headers={},
+        history=history,
+        active_context_boundary_message_id="m3",
+        active_context_summary="Earlier setup summarized without the old marker.",
+    )
+    sess.get_context_messages = lambda: sess.history
+
+    async def fake_preprocess(chat_handler, message, att_ids, sess, **kwargs):
+        return PreprocessedMessage(
+            enhanced_message=message,
+            user_content=message,
+            text_for_context=message,
+            youtube_transcripts=[],
+            attachment_meta=[],
+        )
+
+    def fake_add_user_message(sess, chat_handler, preprocessed, incognito=False):
+        sess.history.append({
+            "role": "user",
+            "content": preprocessed.user_content,
+            "metadata": {"_db_id": "m5"},
+        })
+
+    def fake_extract_preset(chat_handler, preset_id):
+        return PresetInfo(
+            temperature=0.7,
+            max_tokens=1024,
+            system_prompt="You are Odysseus.",
+            character_name=None,
+        )
+
+    async def fake_maybe_compact(sess, endpoint_url, model, messages, headers, owner=None):
+        return messages, 8192, False
+
+    monkeypatch.setattr("routes.chat_helpers.preprocess", fake_preprocess)
+    monkeypatch.setattr("routes.chat_helpers.add_user_message", fake_add_user_message)
+    monkeypatch.setattr("routes.chat_helpers.extract_preset", fake_extract_preset)
+    monkeypatch.setattr("routes.chat_helpers.load_prefs_for_user", lambda user: {})
+    monkeypatch.setattr("routes.chat_helpers.get_current_user", lambda request: "tester")
+    monkeypatch.setattr("routes.chat_helpers.normalize_model_id", lambda *a, **k: None)
+    monkeypatch.setattr("routes.chat_helpers.maybe_compact", fake_maybe_compact)
+    monkeypatch.setattr("routes.chat_helpers.trim_for_context", lambda messages, context_length: messages)
+
+    chat_processor = SimpleNamespace(
+        build_context_preface=lambda **kwargs: ([{"role": "system", "content": kwargs["preset_system_prompt"]}], [], [])
+    )
+
+    ctx = await build_chat_context(
+        sess=sess,
+        request=SimpleNamespace(),
+        chat_handler=SimpleNamespace(),
+        chat_processor=chat_processor,
+        message="latest question",
+        session_id="s-active-boundary",
+        agent_mode=True,
+    )
+
+    model_text = "\n".join(str(m.get("content") or "") for m in ctx.messages)
+    assert "Earlier setup summarized without the old marker." in model_text
+    assert "tail marker" in model_text
+    assert "latest question" in model_text
+    assert "old secret marker" not in model_text
+    assert sess.history[0]["content"] == "old secret marker"
+    assert ctx.context_projection["mode"] == "active_boundary"
+    assert ctx.context_projection["active_boundary_used"] is True
+    assert ctx.context_projection["history_messages_before"] == 5
+    assert ctx.context_projection["history_messages_after"] == 4
 
 
 def test_empty_or_missing_history():

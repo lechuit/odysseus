@@ -18,6 +18,7 @@ from src.context_compactor import (
     project_active_context_messages,
     trim_for_context,
 )
+from src.model_context import estimate_tokens
 from src.auth_helpers import get_current_user
 from src.memory_policy import (
     auto_memory_enabled_from_prefs,
@@ -67,11 +68,64 @@ class ChatContext:
     uprefs: dict
     preset: PresetInfo
     preprocessed: PreprocessedMessage
+    context_projection: dict = field(default_factory=dict)
     # Documents auto-created server-side during preprocess (e.g. when an
     # attached fillable PDF gets rendered into a markdown editor doc).
     # The chat route emits a doc_update SSE event for each before streaming
     # begins, so the editor pane switches to the new doc immediately.
     auto_opened_docs: list = field(default_factory=list)
+
+
+def _context_projection_summary(
+    *,
+    session_id: str,
+    sess,
+    original_history: list,
+    projected_history: list,
+) -> dict:
+    """Return lightweight observability for the model-facing history slice.
+
+    The full chat history remains persisted and visible in the UI.  This
+    summary describes only what is sent to the model after applying an optional
+    active-context boundary.
+    """
+
+    boundary_id = str(getattr(sess, "active_context_boundary_message_id", "") or "")
+    summary = str(getattr(sess, "active_context_summary", "") or "")
+    used_boundary = bool(boundary_id and summary and projected_history is not original_history)
+    info = {
+        "session_id": session_id,
+        "mode": "active_boundary" if used_boundary else "full_history",
+        "active_boundary_used": used_boundary,
+        "boundary_message_id": boundary_id if used_boundary else "",
+        "summary_present": bool(summary),
+        "history_messages_before": len(original_history or []),
+        "history_messages_after": len(projected_history or []),
+        "history_tokens_before_est": estimate_tokens(original_history or []),
+        "history_tokens_after_est": estimate_tokens(projected_history or []),
+    }
+    saved = info["history_tokens_before_est"] - info["history_tokens_after_est"]
+    info["history_tokens_saved_est"] = max(saved, 0)
+    if used_boundary:
+        logger.info(
+            "[context] active boundary projection session=%s boundary=%s "
+            "history_messages=%s->%s history_tokens≈%s->%s saved≈%s",
+            session_id,
+            boundary_id,
+            info["history_messages_before"],
+            info["history_messages_after"],
+            info["history_tokens_before_est"],
+            info["history_tokens_after_est"],
+            info["history_tokens_saved_est"],
+        )
+    else:
+        logger.debug(
+            "[context] full history projection session=%s history_messages=%s history_tokens≈%s",
+            session_id,
+            info["history_messages_before"],
+            info["history_tokens_before_est"],
+        )
+    return info
 
 
 # ── Helpers ────────────────────────────────────────────────────────────── #
@@ -673,7 +727,14 @@ async def build_chat_context(
     # Build messages.  The session/DB history remains complete, but the model
     # receives only the active context projection when automatic compaction has
     # established a boundary.
-    history_messages = project_active_context_messages(sess.get_context_messages(), sess)
+    original_history_messages = sess.get_context_messages()
+    history_messages = project_active_context_messages(original_history_messages, sess)
+    context_projection = _context_projection_summary(
+        session_id=session_id,
+        sess=sess,
+        original_history=original_history_messages,
+        projected_history=history_messages,
+    )
     messages = preface + history_messages
 
     # Current date/time — injected as a standalone *user*-role context message
@@ -697,10 +758,48 @@ async def build_chat_context(
             logger.debug("Failed to add current date/time context", exc_info=True)
 
     # Auto-compact
+    before_auto_compact_tokens = estimate_tokens(messages)
+    before_auto_compact_messages = len(messages)
     messages, context_length, was_compacted = await maybe_compact(
         sess, sess.endpoint_url, sess.model, messages, sess.headers, owner=user,
     )
+    after_auto_compact_tokens = estimate_tokens(messages)
+    after_auto_compact_messages = len(messages)
+    context_projection.update({
+        "context_length": context_length,
+        "auto_compacted": bool(was_compacted),
+        "messages_before_auto_compact": before_auto_compact_messages,
+        "messages_after_auto_compact": after_auto_compact_messages,
+        "tokens_before_auto_compact_est": before_auto_compact_tokens,
+        "tokens_after_auto_compact_est": after_auto_compact_tokens,
+    })
+    if was_compacted:
+        logger.info(
+            "[context] full compaction projected session=%s tokens≈%s->%s messages=%s->%s",
+            session_id,
+            before_auto_compact_tokens,
+            after_auto_compact_tokens,
+            before_auto_compact_messages,
+            after_auto_compact_messages,
+        )
+    before_trim_tokens = after_auto_compact_tokens
+    before_trim_messages = after_auto_compact_messages
     messages = trim_for_context(messages, context_length)
+    after_trim_tokens = estimate_tokens(messages)
+    context_projection.update({
+        "trimmed": bool(len(messages) != before_trim_messages or after_trim_tokens < before_trim_tokens),
+        "messages_after_trim": len(messages),
+        "tokens_after_trim_est": after_trim_tokens,
+    })
+    if context_projection["trimmed"]:
+        logger.info(
+            "[context] trim applied session=%s tokens≈%s->%s messages=%s->%s",
+            session_id,
+            before_trim_tokens,
+            after_trim_tokens,
+            before_trim_messages,
+            len(messages),
+        )
 
     return ChatContext(
         preface=preface,
@@ -714,6 +813,7 @@ async def build_chat_context(
         uprefs=uprefs,
         preset=preset,
         preprocessed=preprocessed,
+        context_projection=context_projection,
         auto_opened_docs=auto_opened_docs,
     )
 

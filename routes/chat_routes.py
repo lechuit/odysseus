@@ -58,7 +58,7 @@ _LITERAL_TOOL_CONTROL_RE = re.compile(
 )
 _EXPLICIT_SINGLE_TOOL_CONTROL_RE = re.compile(
     r"\b(?:ejecuta|ejecutar|invoca|invocar|llama|llamar|usa|usar|call|invoke|run|execute)\b"
-    r".{0,140}\b(?:herramienta|tool)\b\s*(?:[:：=\-]\s*)?"
+    r".{0,140}?\b(?:herramienta|tool)\b\s*(?:[:：=\-]\s*)?"
     r"`?([a-zA-Z_][a-zA-Z0-9_]*(?:__[a-zA-Z0-9_]+)*)`?",
     re.IGNORECASE | re.DOTALL,
 )
@@ -138,6 +138,9 @@ def _literal_tool_control_relevant_tools(message: str) -> Optional[Set[str]]:
         "ls",
         "web_fetch",
         "web_search",
+        "manage_settings",
+        "update_plan",
+        "ask_user",
     }
     for name in explicit_tool_names:
         if re.search(rf"\b{re.escape(name)}\b", lower):
@@ -1462,6 +1465,8 @@ def setup_chat_routes(
                                         pct = min(round((last_metrics["input_tokens"] / ctx.context_length) * 100, 1), 100.0)
                                         last_metrics["context_percent"] = pct
                                         last_metrics["context_length"] = ctx.context_length
+                                    if ctx.context_projection:
+                                        last_metrics["context_projection"] = ctx.context_projection
                                     # The frontend reads `tokens_per_second`; the raw usage event
                                     # carries the backend's true gen speed as `gen_tps` (llama.cpp
                                     # timings). Map it through so this direct-chat path shows real
@@ -1498,6 +1503,8 @@ def setup_chat_routes(
                                     "requested_model": _requested_model,
                                     "usage_source": "estimated",
                                 }
+                                if ctx.context_projection:
+                                    last_metrics["context_projection"] = ctx.context_projection
                                 yield f'data: {json.dumps({"type": "metrics", "data": last_metrics})}\n\n'
                             if full_response:
                                 _saved_id = save_assistant_response(
@@ -1640,6 +1647,8 @@ def setup_chat_routes(
                                     _reported_model = last_metrics.get("model")
                                     last_metrics["requested_model"] = last_metrics.get("requested_model") or _requested_model
                                     last_metrics["model"] = _reported_model or _actual_model or _answered_by or _requested_model
+                                    if ctx.context_projection:
+                                        last_metrics["context_projection"] = ctx.context_projection
                                     yield f'data: {json.dumps({"type": "metrics", "data": last_metrics})}\n\n'
                             except json.JSONDecodeError:
                                 yield chunk
