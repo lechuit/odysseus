@@ -119,3 +119,15 @@ def test_permission_cards_hide_free_text_and_guard_double_clicks():
     assert "if (!text || answered) return" in renderer
     assert "if (!permissionRequest) {" in renderer
     assert ".ask-user-card-permission {" in styles
+
+
+def test_ask_user_choices_submit_through_visible_composer():
+    renderer = (ROOT / "static" / "js" / "chatRenderer.js").read_text(encoding="utf-8")
+
+    assert "const composerInput = () =>" in renderer
+    assert "document.querySelectorAll('textarea#message, #message')" in renderer
+    assert "inputs.find(isVisibleControl)" in renderer
+    assert "const composerSendButton = () =>" in renderer
+    assert "document.querySelectorAll('.send-btn')" in renderer
+    assert "buttons.find((button) => isVisibleControl(button) && !button.disabled)" in renderer
+    assert "input.dispatchEvent(new Event('input', { bubbles: true }))" in renderer

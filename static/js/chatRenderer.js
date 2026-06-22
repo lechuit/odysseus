@@ -2032,15 +2032,59 @@ export function renderAskUserCard(payload, options) {
   list.className = 'ask-user-options';
   card.appendChild(list);
 
+  const isVisibleControl = (el) => {
+    if (!el) return false;
+    try {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return (
+        rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+      );
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const composerInput = () => {
+    const inputs = Array.from(document.querySelectorAll('textarea#message, #message'));
+    return inputs.find(isVisibleControl) || uiModule.el('message');
+  };
+
+  const composerSendButton = () => {
+    const buttons = Array.from(document.querySelectorAll('.send-btn'));
+    return buttons.find((button) => isVisibleControl(button) && !button.disabled)
+      || buttons.find(isVisibleControl)
+      || document.querySelector('.send-btn');
+  };
+
+  const submitComposer = (input) => {
+    const sendButton = composerSendButton();
+    if (sendButton) {
+      sendButton.click();
+      return;
+    }
+    const form = input?.closest?.('form') || document.getElementById('chat-form');
+    if (form) {
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    }
+  };
+
   const send = (text) => {
     if (!text || answered) return;
     answered = true;
     card.querySelectorAll('button,input').forEach((el) => { el.disabled = true; });
     card.remove();
-    const input = uiModule.el('message');
-    if (input) input.value = text;
-    const sendButton = document.querySelector('.send-btn');
-    if (sendButton) sendButton.click();
+    const input = composerInput();
+    if (input) {
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    submitComposer(input);
   };
 
   opts.forEach((opt) => {
