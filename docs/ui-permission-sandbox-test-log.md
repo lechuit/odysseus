@@ -188,6 +188,31 @@ No pending macOS UI checks remain from this sandbox batch.
 - Remaining real-host check:
   - Run the same scenarios on a Linux host with `bubblewrap` or `firejail` installed to confirm runtime enforcement, not just generated command shape.
 
+## Linux sandbox runtime readiness diagnostics
+
+- Date: 2026-06-22
+- Scope: mocked Linux backend validation on macOS; no real Linux host runtime execution yet.
+- Change validated:
+  - `sandbox_status` can now report runtime smoke-test results, not only binary presence;
+  - `bubblewrap`/`firejail` report `available`, `path`, `runnable`, `returncode`, `stdout`, `stderr`, and `error` where applicable;
+  - the Linux plan selector skips an installed-but-unrunnable `bubblewrap` and falls back to runnable `firejail`;
+  - if no installed Linux backend passes the smoke test, fail-closed mode reports `effective_mode=blocked`;
+  - `bubblewrap` no longer emits a `/lib64` bind on hosts where `/lib64` does not exist.
+- Tests added:
+  - fallback from failed `bubblewrap` probe to `firejail`;
+  - blocked status when an installed backend cannot create a sandbox;
+  - positive status when the preferred backend passes the smoke test;
+  - missing Linux system mount path skipped in generated `bubblewrap` command.
+- Validation run:
+  - `tests/test_sandbox_runner.py`: 34 passed, 3 skipped on macOS.
+  - Permission/sandbox/agent regression suite: 252 passed, 3 skipped on macOS.
+  - Full repository suite attempted: 3649 passed, 4 skipped, 7 failed on macOS. Failures were outside this sandbox change area:
+    - README/doc asset expectations: `tests/test_docs_no_orphan_images.py`, `tests/test_readme_ascii_fenced.py`, `tests/test_security_regressions.py`.
+    - `run_focus` dry-run string expectations when `sys.executable` contains spaces: `tests/test_run_focus.py`.
+- Remaining real-host check:
+  - On Linux, run `manage_settings {"action":"sandbox_status"}` with `bubblewrap` installed and confirm `backend_runtime_ready=true`.
+  - Repeat on a Linux host/container where `bubblewrap` is installed but user namespaces are unavailable and confirm the warning/error surfaces clearly.
+
 ## Regression found during sandbox status UI check
 
 ### `UI_SANDBOX_STATUS_2091`

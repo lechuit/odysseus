@@ -1144,6 +1144,8 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                     f"network_deny={status['network_deny']}, "
                     f"command_execution_blocked={status.get('command_execution_blocked', False)}."
                 )
+                if status.get("backend_runtime_ready") is not None:
+                    response += f" backend_runtime_ready={status.get('backend_runtime_ready')}."
                 if warnings:
                     response += "\nWarnings: " + "; ".join(str(w) for w in warnings)
                 return {"response": response, "sandbox": status, "exit_code": 0}

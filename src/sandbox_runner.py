@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -20,6 +21,9 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 _BARE_GIT_GUARD_NAMES = ("HEAD", "objects", "refs", "hooks", "config")
 _SANDBOX_GLOB_CHARS = "*?[]{}"
+_BACKEND_PROBE_TIMEOUT_SECONDS = 5.0
+_BACKEND_PROBE_ERROR_CHARS = 400
+_BACKEND_PROBE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -346,6 +350,145 @@ def _filesystem_glob_warnings(settings: Mapping[str, Any]) -> List[str]:
     return warnings
 
 
+def clear_sandbox_runtime_probe_cache() -> None:
+    """Clear cached Linux backend smoke-test results.
+
+    The cache avoids adding a probe subprocess to every Bash/Python tool call.
+    Tests and explicit diagnostics can clear it when they need fresh evidence.
+    """
+
+    _BACKEND_PROBE_CACHE.clear()
+
+
+def _probe_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    text = str(value).strip()
+    if len(text) > _BACKEND_PROBE_ERROR_CHARS:
+        return text[: _BACKEND_PROBE_ERROR_CHARS - 1] + "…"
+    return text
+
+
+def _linux_true_path() -> str:
+    return shutil.which("true") or "/bin/true"
+
+
+def _linux_backend_probe_command(backend: str, executable: str) -> Tuple[str, ...]:
+    true_path = _linux_true_path()
+    if backend == "bubblewrap":
+        # Bind the host root read-only for the smoke test.  This is intentionally
+        # not the production confinement policy; it only verifies that bwrap can
+        # create the required namespaces and launch a process on this host.
+        return (
+            executable,
+            "--die-with-parent",
+            "--ro-bind",
+            "/",
+            "/",
+            "--tmpfs",
+            "/tmp",
+            "--",
+            true_path,
+        )
+    if backend == "firejail":
+        return (executable, "--quiet", "--noprofile", "--", true_path)
+    raise ValueError(f"unknown Linux sandbox backend {backend!r}")
+
+
+def _run_linux_backend_probe(backend: str, executable: str, *, force: bool = False) -> Dict[str, Any]:
+    cache_key = (backend, executable)
+    if not force and cache_key in _BACKEND_PROBE_CACHE:
+        return dict(_BACKEND_PROBE_CACHE[cache_key])
+
+    command = _linux_backend_probe_command(backend, executable)
+    result: Dict[str, Any] = {
+        "available": True,
+        "path": executable,
+        "runnable": False,
+        "returncode": None,
+        "stdout": "",
+        "stderr": "",
+        "error": "",
+    }
+    try:
+        completed = subprocess.run(
+            command,
+            cwd="/",
+            text=True,
+            capture_output=True,
+            timeout=_BACKEND_PROBE_TIMEOUT_SECONDS,
+        )
+        result.update(
+            {
+                "runnable": completed.returncode == 0,
+                "returncode": completed.returncode,
+                "stdout": _probe_text(completed.stdout),
+                "stderr": _probe_text(completed.stderr),
+            }
+        )
+    except subprocess.TimeoutExpired as exc:
+        result.update(
+            {
+                "runnable": False,
+                "stdout": _probe_text(exc.stdout),
+                "stderr": _probe_text(exc.stderr),
+                "error": f"timed out after {_BACKEND_PROBE_TIMEOUT_SECONDS:g}s",
+            }
+        )
+    except FileNotFoundError as exc:
+        result.update({"available": False, "runnable": None, "error": _probe_text(exc)})
+    except Exception as exc:
+        result.update({"runnable": False, "error": _probe_text(exc)})
+
+    _BACKEND_PROBE_CACHE[cache_key] = dict(result)
+    return result
+
+
+def linux_backend_runtime_checks(*, force: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Return Linux sandbox backend smoke-test results.
+
+    A binary being present is weaker evidence than being able to launch a
+    sandboxed process.  Linux hosts often have bubblewrap/firejail installed but
+    unusable due to user namespaces, container restrictions, or local policy.
+    """
+
+    if platform.system().lower() != "linux":
+        return {}
+    checks: Dict[str, Dict[str, Any]] = {}
+    for backend, binary in (("bubblewrap", "bwrap"), ("firejail", "firejail")):
+        executable = shutil.which(binary)
+        if not executable:
+            checks[backend] = {
+                "available": False,
+                "path": "",
+                "runnable": None,
+                "returncode": None,
+                "stdout": "",
+                "stderr": "",
+                "error": "",
+            }
+            continue
+        checks[backend] = _run_linux_backend_probe(backend, executable, force=force)
+    return checks
+
+
+def _linux_backend_runnable(backend: str) -> bool:
+    check = linux_backend_runtime_checks().get(backend)
+    return bool(check and check.get("runnable") is True)
+
+
+def _sandbox_unavailable_reason(system: str) -> str:
+    if system == "linux":
+        checks = linux_backend_runtime_checks()
+        installed = [check for check in checks.values() if check.get("available")]
+        runnable = [check for check in installed if check.get("runnable") is True]
+        if installed and not runnable:
+            return "sandbox requested but installed Linux backends failed runtime smoke tests"
+    return "sandbox requested but no supported backend is available"
+
+
 def _workspace_paths(cwd: str, *, include_read_overrides: bool = True) -> Tuple[List[str], List[str], List[str], List[str]]:
     settings = normalize_sandbox_settings(_settings())
     fs = settings.get("filesystem") if isinstance(settings.get("filesystem"), dict) else {}
@@ -480,18 +623,13 @@ def _linux_bwrap_plan(
     ]
     if _network_denied() and not extra_allow_network:
         args.append("--unshare-net")
-    args.extend(
-        [
-            "--dev-bind", "/dev", "/dev",
-            "--proc", "/proc",
-            "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/bin", "/bin",
-            "--ro-bind", "/lib", "/lib",
-            "--ro-bind", "/lib64", "/lib64",
-            "--ro-bind", "/etc", "/etc",
-            "--tmpfs", "/tmp",
-        ]
-    )
+    if os.path.exists("/dev"):
+        args.extend(["--dev-bind", "/dev", "/dev"])
+    args.extend(["--proc", "/proc"])
+    for system_path in ("/usr", "/bin", "/lib", "/lib64", "/etc"):
+        if os.path.exists(system_path):
+            args.extend(["--ro-bind", system_path, system_path])
+    args.extend(["--tmpfs", "/tmp"])
     all_mounts = [*allow_read, *allow_write, *deny_read, *deny_write, *extra_read, *extra_write]
     for path in _linux_parent_dirs_for_mounts(all_mounts):
         args.extend(["--dir", path])
@@ -697,35 +835,39 @@ def build_sandbox_plan(
                 extra_allow_network=extra_allow_network,
             )
         elif system == "linux":
-            plan = _linux_bwrap_plan(
-                command,
-                cwd,
-                extra_allow_read=extra_allow_read,
-                extra_allow_write=extra_allow_write,
-                extra_allow_network=extra_allow_network,
-            ) or _linux_firejail_plan(
-                command,
-                cwd,
-                extra_allow_read=extra_allow_read,
-                extra_allow_write=extra_allow_write,
-                extra_allow_network=extra_allow_network,
-            )
+            if _linux_backend_runnable("bubblewrap"):
+                plan = _linux_bwrap_plan(
+                    command,
+                    cwd,
+                    extra_allow_read=extra_allow_read,
+                    extra_allow_write=extra_allow_write,
+                    extra_allow_network=extra_allow_network,
+                )
+            if plan is None and _linux_backend_runnable("firejail"):
+                plan = _linux_firejail_plan(
+                    command,
+                    cwd,
+                    extra_allow_read=extra_allow_read,
+                    extra_allow_write=extra_allow_write,
+                    extra_allow_network=extra_allow_network,
+                )
     except Exception as exc:
         logger.warning("Failed to build sandbox plan: %s", exc)
         plan = None
     if plan:
         return plan
+    unavailable_reason = _sandbox_unavailable_reason(system)
     if fail_if_unavailable():
         return SandboxPlan(
             enabled=True,
             command=tuple(command),
-            reason="sandbox requested but no supported backend is available",
+            reason=unavailable_reason,
             sandboxed=False,
         )
     return SandboxPlan(
         enabled=True,
         command=tuple(command),
-        reason="sandbox backend unavailable; running unsandboxed because fail_if_unavailable=false",
+        reason=f"{unavailable_reason}; running unsandboxed because fail_if_unavailable=false",
         sandboxed=False,
     )
 
@@ -740,7 +882,16 @@ def available_backends() -> Dict[str, bool]:
     }
 
 
-def sandbox_dependency_report() -> Dict[str, Any]:
+def _linux_probe_failure_warning(backend: str, check: Mapping[str, Any]) -> str:
+    detail = str(check.get("stderr") or check.get("error") or "").strip()
+    if not detail and check.get("returncode") not in (None, 0):
+        detail = f"exit code {check.get('returncode')}"
+    if detail:
+        return f"{backend} is installed but failed a sandbox smoke test: {detail}"
+    return f"{backend} is installed but failed a sandbox smoke test"
+
+
+def sandbox_dependency_report(*, probe_runtime: bool = False) -> Dict[str, Any]:
     """Return dependency diagnostics for the currently supported OS backends."""
 
     backends = available_backends()
@@ -748,6 +899,7 @@ def sandbox_dependency_report() -> Dict[str, Any]:
     errors: List[str] = []
     warnings: List[str] = []
     install_hint = ""
+    runtime_checks: Dict[str, Dict[str, Any]] = {}
 
     if system == "darwin":
         if not backends.get("sandbox-exec"):
@@ -756,23 +908,43 @@ def sandbox_dependency_report() -> Dict[str, Any]:
     elif system == "linux":
         has_bwrap = bool(backends.get("bubblewrap"))
         has_firejail = bool(backends.get("firejail"))
+        if probe_runtime:
+            runtime_checks = linux_backend_runtime_checks()
         if not has_bwrap and not has_firejail:
             errors.append("Linux sandbox requires bubblewrap or firejail")
             install_hint = "install bubblewrap or firejail, for example: apt install bubblewrap firejail"
         elif not has_bwrap:
             warnings.append("bubblewrap is unavailable; firejail fallback will be used")
             install_hint = "install bubblewrap for the preferred Linux sandbox backend"
+        if probe_runtime and (has_bwrap or has_firejail):
+            runnable = [
+                name
+                for name, check in runtime_checks.items()
+                if check.get("available") and check.get("runnable") is True
+            ]
+            for backend, check in runtime_checks.items():
+                if check.get("available") and check.get("runnable") is False:
+                    warnings.append(_linux_probe_failure_warning(backend, check))
+            if not runnable:
+                errors.append("Linux sandbox backends are installed but none passed a runtime smoke test")
+                install_hint = (
+                    "check unprivileged user namespaces, container restrictions, setuid/firejail policy, "
+                    "or install a runnable bubblewrap/firejail backend"
+                )
     else:
         errors.append(f"sandbox is not supported on platform {system or 'unknown'}")
         install_hint = "use macOS sandbox-exec or Linux bubblewrap/firejail"
 
-    return {
+    report = {
         "platform": system,
         "available_backends": {k: v for k, v in backends.items() if k != "platform"},
         "errors": errors,
         "warnings": warnings,
         "install_hint": install_hint,
     }
+    if runtime_checks:
+        report["runtime_checks"] = runtime_checks
+    return report
 
 
 def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
@@ -788,7 +960,7 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
         except OSError:
             pass
     backends = available_backends()
-    dependencies = sandbox_dependency_report()
+    dependencies = sandbox_dependency_report(probe_runtime=bool(settings["enabled"]))
     warnings: List[str] = []
     command_execution_blocked = bool(
         settings["enabled"] and settings["fail_if_unavailable"] and not plan.sandboxed
@@ -816,6 +988,10 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
         warnings.extend(_filesystem_glob_warnings(settings))
     if not settings["enabled"]:
         warnings.append("sandbox is disabled; operation permissions still run before Bash/Python")
+    runtime_checks = dependencies.get("runtime_checks") or {}
+    backend_runtime_ready: Optional[bool] = None
+    if plan.backend and plan.backend in runtime_checks:
+        backend_runtime_ready = runtime_checks[plan.backend].get("runnable") is True
     return {
         "enabled": settings["enabled"],
         "fail_if_unavailable": settings["fail_if_unavailable"],
@@ -829,6 +1005,7 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
         "enforcement_level": enforcement_level,
         "command_execution_blocked": command_execution_blocked,
         "fallback_unsandboxed": fallback_unsandboxed,
+        "backend_runtime_ready": backend_runtime_ready,
         "reason": plan.reason,
         "dependencies": dependencies,
         "filesystem": {

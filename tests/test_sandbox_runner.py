@@ -443,6 +443,32 @@ def test_bubblewrap_plan_overlays_write_denies(monkeypatch, tmp_path):
     assert any(command[i : i + 3] == ["--ro-bind", "/dev/null", str(ws / ".env")] for i in range(len(command) - 2))
 
 
+def test_bubblewrap_plan_skips_missing_system_mounts(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    real_exists = os.path.exists
+
+    def fake_exists(path):
+        if path in {"/dev", "/usr", "/bin", "/lib", "/etc"}:
+            return True
+        if path == "/lib64":
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "network": {"deny": False}})
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+    monkeypatch.setattr(sandbox_runner.os.path, "exists", fake_exists)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws))
+
+    assert plan is not None
+    command = list(plan.command)
+    _arg_triplet_index(command, "--ro-bind", "/usr", "/usr")
+    assert not any(command[i : i + 3] == ["--ro-bind", "/lib64", "/lib64"] for i in range(len(command) - 2))
+
+
 def test_bubblewrap_plan_can_allow_network_for_approved_operation(monkeypatch, tmp_path):
     from src import sandbox_runner
 
@@ -828,3 +854,95 @@ def test_sandbox_status_includes_linux_dependency_report(monkeypatch, tmp_path):
     assert "Linux sandbox requires bubblewrap or firejail" in status["dependencies"]["errors"]
     assert "apt install bubblewrap firejail" in status["dependencies"]["install_hint"]
     assert any("bubblewrap or firejail" in warning for warning in status["warnings"])
+
+
+def test_linux_build_skips_unrunnable_bubblewrap_for_firejail(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    sandbox_runner.clear_sandbox_runtime_probe_cache()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "fail_if_unavailable": True})
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Linux")
+
+    def fake_which(name):
+        return {
+            "bwrap": "/usr/bin/bwrap",
+            "firejail": "/usr/bin/firejail",
+            "true": "/usr/bin/true",
+        }.get(name)
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "/usr/bin/bwrap":
+            return subprocess.CompletedProcess(command, 1, "", "No permissions to create namespace")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(sandbox_runner.shutil, "which", fake_which)
+    monkeypatch.setattr(sandbox_runner.subprocess, "run", fake_run)
+
+    plan = sandbox_runner.build_sandbox_plan(("echo", "hi"), cwd=str(ws))
+
+    assert plan.sandboxed is True
+    assert plan.backend == "firejail"
+
+
+def test_sandbox_status_reports_unrunnable_linux_backend(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    sandbox_runner.clear_sandbox_runtime_probe_cache()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "fail_if_unavailable": True})
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        sandbox_runner.shutil,
+        "which",
+        lambda name: {"bwrap": "/usr/bin/bwrap", "true": "/usr/bin/true"}.get(name),
+    )
+    monkeypatch.setattr(
+        sandbox_runner.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "No permissions to create namespace",
+        ),
+    )
+
+    status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
+
+    checks = status["dependencies"]["runtime_checks"]
+    assert checks["bubblewrap"]["available"] is True
+    assert checks["bubblewrap"]["runnable"] is False
+    assert status["sandboxed"] is False
+    assert status["effective_mode"] == "blocked"
+    assert status["command_execution_blocked"] is True
+    assert "installed Linux backends failed runtime smoke tests" in status["reason"]
+    assert "Linux sandbox backends are installed but none passed a runtime smoke test" in status["dependencies"]["errors"]
+    assert any("bubblewrap is installed but failed a sandbox smoke test" in warning for warning in status["warnings"])
+
+
+def test_sandbox_status_reports_runnable_linux_backend(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    sandbox_runner.clear_sandbox_runtime_probe_cache()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "fail_if_unavailable": True})
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        sandbox_runner.shutil,
+        "which",
+        lambda name: {"bwrap": "/usr/bin/bwrap", "true": "/usr/bin/true"}.get(name),
+    )
+    monkeypatch.setattr(
+        sandbox_runner.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+
+    status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
+
+    checks = status["dependencies"]["runtime_checks"]
+    assert checks["bubblewrap"]["runnable"] is True
+    assert status["sandboxed"] is True
+    assert status["selected_backend"] == "bubblewrap"
+    assert status["backend_runtime_ready"] is True
+    assert status["effective_mode"] == "sandboxed"
