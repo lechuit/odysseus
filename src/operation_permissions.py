@@ -1662,9 +1662,12 @@ def permission_resume_note(consumed: Mapping[str, Any]) -> str:
     return (
         "OPERATION PERMISSION RESUME\n"
         "The user approved the pending operation permission.\n"
+        "This is a control response, not a new user task. Do not answer the approval label directly.\n"
+        "Your FIRST action in this turn MUST be to invoke the approved tool again with the exact approved args/content below.\n"
+        "Do not say the task is done, do not update the plan, and do not ask another question before the approved tool returns.\n"
         "Continue the current-session task; do not treat the user's permission label as a new request.\n"
         "Do not pull in unrelated sessions, memories, or tasks for this approval turn.\n"
-        "Retry the approved operation if it is still needed, then continue with the original task.\n"
+        "After the approved operation returns, continue with the original task.\n"
         f"Approved tool: {tool}\n"
         f"Approved operation: {description}\n"
         f"Approved tool args/content:\n{content}"

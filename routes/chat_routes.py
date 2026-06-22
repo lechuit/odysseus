@@ -759,7 +759,12 @@ def setup_chat_routes(
             _insert_at = len(ctx.messages)
             for _idx in range(len(ctx.messages) - 1, -1, -1):
                 if ctx.messages[_idx].get("role") == "user":
-                    _insert_at = _idx
+                    # The permission label itself ("Permitir una vez") is
+                    # intentionally low-signal. Put the resume directive after
+                    # that label so it becomes the most recent instruction and
+                    # small local models do not answer "Hecho" without
+                    # replaying the approved operation.
+                    _insert_at = _idx + 1
                     break
             ctx.messages.insert(_insert_at, {"role": "system", "content": permission_context_note})
 

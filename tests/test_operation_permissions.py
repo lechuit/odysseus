@@ -447,9 +447,38 @@ def test_permission_resume_note_and_tools_for_file_approval(monkeypatch):
     assert {"edit_file", "write_file", "bash", "read_file", "get_workspace"} <= tools
     note = op.permission_resume_note(consumed)
     assert "OPERATION PERMISSION RESUME" in note
+    assert "FIRST action in this turn MUST be to invoke the approved tool again" in note
+    assert "Do not say the task is done" in note
     assert "do not treat the user's permission label as a new request" in note
     assert "Approved tool: edit_file" in note
     assert ".git/config" in note
+
+
+def test_permission_resume_note_for_read_file_requires_exact_replay(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-read-resume"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+    decision = op.evaluate_tool_permission(
+        "read_file",
+        json.dumps({"path": ".git/HEAD"}),
+        session_id=sid,
+    )
+    assert decision.behavior == "ask"
+    op.register_pending_approval(sid, decision)
+
+    consumed = op.consume_pending_permission_response(sid, "Permitir una vez")
+    tools = set(consumed["resume_tools"])
+    assert "read_file" in tools
+
+    note = op.permission_resume_note(consumed)
+    assert "Approved tool: read_file" in note
+    assert ".git/HEAD" in note
+    assert "FIRST action in this turn MUST be to invoke the approved tool again" in note
 
 
 def test_protected_project_paths_ask_for_read_and_write(monkeypatch):

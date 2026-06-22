@@ -118,6 +118,18 @@ def test_permission_ask_turns_disable_skill_extraction():
     assert "extract_skills=user_requested_agent and not _agent_permission_requested" in source
 
 
+def test_permission_resume_note_is_inserted_after_permission_label():
+    """The resume directive must be the newest instruction after an approval.
+
+    Small local models can otherwise answer the low-signal label ("Permitir una
+    vez") directly and fail to replay the approved tool.
+    """
+    source = _CHAT_ROUTES.read_text(encoding="utf-8")
+
+    assert "_insert_at = _idx + 1" in source
+    assert "replaying the approved operation" in source
+
+
 # ── Functional tests of the disabled-tools logic ───────────────
 
 
