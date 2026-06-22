@@ -716,8 +716,33 @@ def test_firejail_plan_orders_operation_overrides_after_denies(monkeypatch, tmp_
 
     assert plan is not None
     command = list(plan.command)
-    assert command.index(f"--blacklist={secret}") < command.index(f"--whitelist={secret}")
+    assert f"--blacklist={secret}" not in command
+    assert f"--whitelist={secret}" in command
     assert command.index(f"--read-only={outside}") < command.index(f"--read-write={outside}")
+
+
+def test_firejail_plan_keeps_parent_read_deny_for_approved_child(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret_dir = tmp_path / "secret-dir"
+    secret_dir.mkdir()
+    secret = secret_dir / "token.txt"
+    secret.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {"deny_read": [str(secret_dir)]},
+        "network": {"deny": False},
+    })
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/firejail" if name == "firejail" else None)
+
+    plan = sandbox_runner._linux_firejail_plan(("echo", "hi"), str(ws), extra_allow_read=[str(secret)])
+
+    assert plan is not None
+    command = list(plan.command)
+    assert f"--blacklist={secret_dir}" in command
+    assert f"--whitelist={secret}" in command
 
 
 def test_firejail_plan_orders_configured_allow_read_after_deny(monkeypatch, tmp_path):
@@ -741,7 +766,8 @@ def test_firejail_plan_orders_configured_allow_read_after_deny(monkeypatch, tmp_
 
     assert plan is not None
     command = list(plan.command)
-    assert command.index(f"--blacklist={secret}") < command.index(f"--whitelist={secret}")
+    assert f"--blacklist={secret}" not in command
+    assert f"--whitelist={secret}" in command
 
 
 def _has_arg_pair(command, option, value):

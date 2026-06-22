@@ -765,6 +765,19 @@ def _linux_parent_dirs_after_masks(paths: Sequence[str], mask_paths: Sequence[st
     return out
 
 
+def _firejail_exact_read_override(deny_path: str, allowed_read: Sequence[str]) -> bool:
+    """Return whether Firejail should omit an exact read blacklist.
+
+    Firejail does not reliably let a later ``--whitelist`` override an earlier
+    ``--blacklist``.  For exact file approvals, omit that exact blacklist for
+    the reviewed operation.  Do not treat an approved child as overriding a
+    denied parent directory; that would expose the whole sensitive directory.
+    """
+
+    deny_real = _real(deny_path)
+    return any(_real(path) == deny_real for path in allowed_read)
+
+
 def _linux_firejail_plan(
     command: Sequence[str],
     cwd: str,
@@ -805,6 +818,8 @@ def _linux_firejail_plan(
             args_list.append(f"--whitelist={path}")
             args_list.append(f"--read-write={path}")
     for path in deny_read:
+        if _firejail_exact_read_override(path, extra_read):
+            continue
         if os.path.exists(path):
             args_list.append(f"--blacklist={path}")
     for path in deny_write:
