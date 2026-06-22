@@ -918,6 +918,18 @@ _BASH_PATH_COMMANDS = {
     "wc",
 }
 _BASH_WRITE_PATH_COMMANDS = {"cp", "ln", "mkdir", "mv", "rm", "rmdir", "tee", "touch"}
+_BASH_GIT_PATH_FLAGS = {"-C", "--git-dir", "--work-tree"}
+_BASH_GIT_PATH_ENV_VARS = {
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+}
+_BASH_GIT_ENV_PATH_RE = re.compile(
+    r"(?:^|[\s;|&])"
+    r"(?P<name>GIT_DIR|GIT_WORK_TREE|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM)="
+    r"(?P<value>'[^']*'|\"[^\"]*\"|[^\s;|&]+)"
+)
 _BASH_GLOB_CHARS = re.compile(r"[*?\[\]{}]")
 _BASH_COMMAND_SUBSTITUTION_RE = re.compile(r"(\$\(|\$\{|\$\[|`)")
 _BASH_PROCESS_SUBSTITUTION_RE = re.compile(r"(^|[^<>])(?:<|>)\(")
@@ -1060,6 +1072,19 @@ def _bash_uses_network(command: str) -> bool:
     return False
 
 
+def _bash_segment_base(segment: str) -> str:
+    base, _parts = _parts_for_bash_path_analysis(segment)
+    return base
+
+
+def _bash_segment_is_cd(segment: str) -> bool:
+    return _bash_segment_base(segment) == "cd"
+
+
+def _bash_segment_is_git(segment: str) -> bool:
+    return _bash_segment_base(segment) == "git"
+
+
 def _python_uses_network(code: str) -> bool:
     return bool(_PYTHON_NETWORK_RE.search(code or ""))
 
@@ -1176,6 +1201,9 @@ def _bash_paths_for_segment(segment: str) -> List[Tuple[str, str]]:
         paths.append((target, "read"))
 
     base, parts = _parts_for_bash_path_analysis(segment)
+    if base == "git":
+        paths.extend((path, "read") for path in _git_paths_for_segment(segment, parts))
+        return paths
     if not base or base not in _BASH_PATH_COMMANDS:
         return paths
     args = parts[1:]
@@ -1235,6 +1263,43 @@ def _bash_paths_for_segment(segment: str) -> List[Tuple[str, str]]:
 
     for path in extracted:
         paths.append((path, op))
+    return paths
+
+
+def _git_paths_for_segment(segment: str, parts: List[str]) -> List[str]:
+    """Return static Git control paths that affect command execution.
+
+    Git can be pointed at a different repository/work-tree with flags such as
+    ``git -C /tmp status`` or environment variables such as
+    ``GIT_DIR=/tmp/repo/.git git status``.  Treat those as read targets so the
+    normal workspace/protected-path checks get a chance to ask before a
+    seemingly read-only Git command runs in an unreviewed location.
+    """
+
+    paths: List[str] = []
+    if not parts or os.path.basename(parts[0]) != "git":
+        return paths
+
+    idx = 1
+    while idx < len(parts):
+        arg = parts[idx]
+        if arg == "--":
+            break
+        if arg in _BASH_GIT_PATH_FLAGS and idx + 1 < len(parts):
+            paths.append(parts[idx + 1])
+            idx += 2
+            continue
+        if arg.startswith("--git-dir=") or arg.startswith("--work-tree="):
+            paths.append(arg.split("=", 1)[1])
+            idx += 1
+            continue
+        idx += 1
+
+    if _bash_segment_is_git(segment):
+        for match in _BASH_GIT_ENV_PATH_RE.finditer(segment or ""):
+            value = (match.group("value") or "").strip().strip("'\"")
+            if value:
+                paths.append(value)
     return paths
 
 
@@ -1543,6 +1608,10 @@ def classify_bash_command(command: str) -> Tuple[str, str]:
     segments = _split_shell_segments(cmd)
     if len(segments) > _MAX_BASH_SEGMENTS_FOR_PERMISSION:
         return "dangerous", "command is too complex to safely analyze"
+    if len(segments) > 1 and any(_bash_segment_is_cd(segment) for segment in segments):
+        if any(_bash_segment_is_git(segment) for segment in segments):
+            return "dangerous", "compound command changes directory before running git"
+        return "mutating", "compound command changes working directory and needs review"
 
     classifications: List[str] = []
     for segment in segments:

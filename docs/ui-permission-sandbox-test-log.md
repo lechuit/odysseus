@@ -6,6 +6,18 @@ Local install: `/Users/gabrielpena/Library/Application Support/Odysseus`
 
 ## Completed UI checks
 
+### Sandbox status with strict single-tool guardrail
+
+- Marker: `UI_SANDBOX_STATUS_37DC798`
+- Local install commit: `37dc798`
+- Prompt: asked the agent to execute exactly `manage_settings` with `{"action":"sandbox_status"}` and no other tools.
+- Result: one `MANAGE_SETTINGS done`, no visible `MANAGE_SKILLS`, and a concise sandbox status answer.
+- Observed answer: `enabled: true`, `sandboxed: true`, `backend: sandbox-exec`, `platform: darwin`, `warnings: []`.
+- Server log confirmation:
+  - `Suppressing memory/RAG/skills for explicit single-tool turn: ['manage_settings']`
+  - `[agent-intent] selected_tools=['manage_settings']`
+  - `[agent-debug] ... tools_sent=1 tool_names=['manage_settings'] relevant_tools=['manage_settings']`
+
 ### Operation permission card for path outside workspace
 
 - Scenario: agent requested a Bash read outside the active workspace.
@@ -48,6 +60,54 @@ Local install: `/Users/gabrielpena/Library/Application Support/Odysseus`
   - second round `tools_sent=0`
   - executed `bash: cat /tmp/ody_strict_session_1782105642.txt -> exit_code=0`
 
+### Sandbox approved outside read
+
+- Marker: `UI_SANDBOX_OUTSIDE_READ_240622`
+- Setup file: `/Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/read.txt`
+- Expected content: `outside-read-ok-240622`
+- Prompt: requested literal Bash command `cat /Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/read.txt`.
+- Expected: because the active workspace was `odysseus-path-policy-test-workspace`, reading this path should require approval.
+- User action: clicked `Permitir una vez`.
+- Result: Bash replayed deterministically and returned `outside-read-ok-240622`.
+- Server log confirmation:
+  - `[agent-intent] selected_tools=['bash']`
+  - `[agent-debug] ... tools_sent=1 tool_names=['bash'] relevant_tools=['bash']`
+  - `Operation permission requires approval ... reason=bash read targets a path outside the active workspace`
+  - `[operation-permissions] deterministic replay of approved bash`
+  - `Tool executed: bash: cat /Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/read.txt -> exit_code=0`
+
+### Sandbox approved outside write
+
+- Marker: `UI_SANDBOX_OUTSIDE_WRITE_240622`
+- Target file: `/Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/write.txt`
+- Prompt: requested literal Bash command `printf 'outside-write-ok-240622\n' > /Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/write.txt && cat /Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/write.txt`.
+- Expected: writing this path outside the active workspace should require approval, then receive a narrow sandbox write allowance.
+- User action: clicked `Permitir una vez`.
+- Result: Bash replayed deterministically, wrote the file, and returned `outside-write-ok-240622`.
+- Filesystem verification: `/Users/gabrielpena/Desktop/Personal/ody-sandbox-outside/write.txt` contained `outside-write-ok-240622`.
+- Server log confirmation:
+  - `[agent-intent] selected_tools=['bash']`
+  - `[agent-debug] ... tools_sent=1 tool_names=['bash'] relevant_tools=['bash']`
+  - `Operation permission requires approval ... reason=bash write targets a path outside the active workspace`
+  - `[operation-permissions] deterministic replay of approved bash`
+  - `Tool executed: bash: printf 'outside-write-ok-240622\n' ... -> exit_code=0`
+
+### Sandbox sensitive protected read denied
+
+- Marker: `UI_SANDBOX_SENSITIVE_DENY_240622`
+- Prompt: requested literal Bash command `cat /Users/gabrielpena/Desktop/Personal/odysseus/.git/config`.
+- Expected: reading `.git/config` should never run silently.
+- Observed UI: approval card appeared with reason `bash read targets a protected path`.
+- User action: clicked `Denegar`.
+- Result: terminal denial message was rendered by the route without re-entering the model/tool loop.
+- Leak check: UI text did not contain `.git/config` contents such as `[remote "origin"]`, `url =`, `github.com`, or `git@`.
+- Server log confirmation:
+  - `[agent-intent] selected_tools=['bash']`
+  - `[agent-debug] ... tools_sent=1 tool_names=['bash'] relevant_tools=['bash']`
+  - `Operation permission requires approval ... reason=bash read targets a protected path`
+  - `[operation-permissions] OPERATION PERMISSION RESUME`
+  - `The user denied the pending operation permission.`
+
 ## Important UI testing note
 
 The in-app textarea did not submit reliably with `Enter` during these tests. For future UI automation, after typing the prompt, click the visible send button.
@@ -56,27 +116,7 @@ The in-app textarea did not submit reliably with `Enter` during these tests. For
 
 These should be run after the sandbox runner changes are installed locally and the app is restarted.
 
-1. `sandbox_status`
-   - Ask the agent to report the sandbox status via settings.
-   - Expected on this Mac: `sandbox-exec` available; sandbox may be disabled until explicitly enabled.
-
-2. Enable local sandbox
-   - Ask the agent to set sandbox preset `local` or `strict_local`.
-   - Expected: settings update succeeds and `sandbox_status` reports enabled.
-
-3. Approved outside read
-   - Create/read a known file outside the active workspace.
-   - Expected: approval card appears; after `Permitir una vez`, the exact operation succeeds.
-
-4. Approved outside write
-   - Write to a reviewed file or directory outside the active workspace.
-   - Expected: approval card appears; after approval, sandbox receives a narrow write allowance and the operation succeeds.
-
-5. Sensitive read/write block or approval
-   - Try reading/writing protected locations such as `.ssh`, `.gnupg`, `.env`, `.git/config`, `.github/workflows`.
-   - Expected: operation is never silent. It should ask or deny depending on builtin severity/rule.
-
-6. Network-deny sandbox override
+1. Network-deny sandbox override
    - Enable sandbox with network denied.
    - Try a Bash/Python network operation.
    - Expected: approval card appears; if approved, only that reviewed operation receives a network override.
@@ -99,6 +139,15 @@ These should be run after the sandbox runner changes are installed locally and t
   - After that tool executes, the final answer round receives zero tools.
 - Cleanup:
   - Removed the generated local test artifact `data/skills/system/verify-sbx-validity/SKILL.md`.
-- Follow-up UI validation:
-  - Re-run this test after installing the fix locally.
-  - Expected result: one `MANAGE_SETTINGS done`, no `MANAGE_SKILLS`, and a concise sandbox status answer.
+- Follow-up UI validation: passed with marker `UI_SANDBOX_STATUS_37DC798`; details are recorded above.
+
+## Hardening added after comparing `/Users/gabrielpena/Downloads/code-source-main`
+
+- Reference behavior reviewed:
+  - sandbox settings include explicit filesystem/network controls;
+  - read-only Bash validation treats `cd` + `git` as approval-required to reduce bare-repository/sandbox-escape risk;
+  - Git control paths such as `git -C`, `--git-dir`, `--work-tree`, and `GIT_DIR=...` are security-relevant.
+- Odysseus hardening added:
+  - compound Bash commands that change directory and then run Git now require approval;
+  - compound Bash commands that change directory before another command now require review;
+  - Git control paths are extracted and passed through the existing workspace/protected-path checks.

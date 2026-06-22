@@ -45,6 +45,8 @@ def test_bash_classifier_readonly_mutating_dangerous():
     assert classify_bash_command("git status")[0] == "read_only"
     assert classify_bash_command("git status && git diff -- src/app.py")[0] == "read_only"
     assert classify_bash_command("cat README.md | wc -l")[0] == "read_only"
+    assert classify_bash_command("cd /tmp && ls")[0] == "mutating"
+    assert classify_bash_command("cd /tmp && git status")[0] == "dangerous"
     assert classify_bash_command("git push origin main")[0] == "mutating"
     assert classify_bash_command("git status && git push origin main")[0] == "mutating"
     assert classify_bash_command("grep foo README.md > /tmp/out.txt")[0] == "mutating"
@@ -212,6 +214,53 @@ def test_bash_path_constraints_ask_for_outside_workspace_read(monkeypatch, tmp_p
 
     assert decision.behavior == "ask"
     assert "outside the active workspace" in decision.reason
+
+
+def test_bash_path_constraints_ask_for_git_control_paths(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    git_dash_c = op.evaluate_tool_permission("bash", f"git -C {outside} status", session_id="s-git-c")
+    git_dir_env = op.evaluate_tool_permission("bash", f"GIT_DIR={outside}/.git git status", session_id="s-git-dir")
+    git_dir_flag = op.evaluate_tool_permission("bash", f"git --git-dir={outside}/.git status", session_id="s-git-dir-flag")
+
+    assert git_dash_c.behavior == "ask"
+    assert git_dir_env.behavior == "ask"
+    assert git_dir_flag.behavior == "ask"
+    assert "outside the active workspace" in git_dash_c.reason
+    assert "protected path" in git_dir_env.reason
+    assert "protected path" in git_dir_flag.reason
+
+
+def test_bash_policy_asks_for_cd_compound_commands(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+
+    workspace = tmp_path / "project"
+    (workspace / "src").mkdir(parents=True)
+
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "_bash_active_workspace", lambda: str(workspace))
+    monkeypatch.setattr(op, "_bash_agent_cwd", lambda: str(workspace))
+
+    read_only_after_cd = op.evaluate_tool_permission("bash", "cd src && ls", session_id="s-cd-ls")
+    git_after_cd = op.evaluate_tool_permission("bash", "cd src && git status", session_id="s-cd-git")
+
+    assert read_only_after_cd.behavior == "ask"
+    assert "changes working directory" in read_only_after_cd.reason
+    assert git_after_cd.behavior == "ask"
+    assert "changes directory before running git" in git_after_cd.reason
 
 
 def test_bash_path_constraints_ask_for_outside_workspace_redirection(monkeypatch, tmp_path):
