@@ -205,6 +205,62 @@ def test_permission_resume_replays_stored_operation_before_model(monkeypatch):
     assert any("Leí el archivo aprobado" in event.get("delta", "") for event in events)
 
 
+def test_permission_resume_force_answer_strips_leaked_textual_tool_call(monkeypatch):
+    _patch_loop_basics(monkeypatch)
+    exec_count = 0
+
+    async def _fake_exec(block, *args, **kwargs):
+        nonlocal exec_count
+        exec_count += 1
+        return ("bash: cat /tmp/permprobe.txt", {
+            "output": "shortpath-ok",
+            "exit_code": 0,
+        })
+
+    async def _fake_stream(_candidates, messages, **kwargs):
+        assert kwargs.get("tools") is None
+        assert any("shortpath-ok" in str(msg.get("content", "")) for msg in messages)
+        yield _delta_chunk(
+            "short-result=shortpath-ok\n"
+            '<|tool_call>call:bash{command:<|"|>cat /tmp/permprobe.txt<|"|>,'
+            'description:<|"|>Read permission probe file<|"|>}<tool_call|>'
+        )
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(al, "execute_tool_block", _fake_exec, raising=False)
+    monkeypatch.setattr(al, "stream_llm_with_fallback", _fake_stream, raising=False)
+
+    chunks = _collect(
+        al.stream_agent_loop(
+            "http://local.test/v1",
+            "local-model",
+            [
+                {"role": "user", "content": "Permitir una vez"},
+                {
+                    "role": "system",
+                    "content": "OPERATION PERMISSION RESUME\nThe user approved the pending operation permission.",
+                },
+            ],
+            max_rounds=1,
+            relevant_tools={"bash"},
+            permission_resume_operation={
+                "tool": "bash",
+                "content": "cat /tmp/permprobe.txt",
+                "description": "bash: cat /tmp/permprobe.txt",
+            },
+            _is_teacher_run=True,
+        )
+    )
+    events = _events(chunks)
+    rendered = "".join(chunks)
+    visible_deltas = [event.get("delta", "") for event in events if "delta" in event]
+
+    assert exec_count == 1
+    assert "<|tool_call>" not in rendered
+    assert visible_deltas == ["short-result=shortpath-ok"]
+    assert sum(1 for event in events if event.get("type") == "tool_start") == 1
+
+
 def test_guide_only_skips_tool_retrieval(monkeypatch):
     _patch_loop_basics(monkeypatch)
     sent_tools = []

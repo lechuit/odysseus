@@ -17,3 +17,16 @@ def test_non_string_does_not_crash():
 def test_plain_text_passes_through():
     assert strip_tool_blocks("hello world") == "hello world"
     assert parse_tool_blocks("no tools here") == []
+
+
+def test_chat_template_tool_call_tokens_are_stripped():
+    leaked = (
+        "done\n"
+        '<|tool_call>call:bash{command:<|"|>cat /tmp/permprobe.txt<|"|>,'
+        'description:<|"|>Read permission probe file<|"|>}<tool_call|>'
+    )
+
+    cleaned = strip_tool_blocks(leaked)
+
+    assert cleaned == "done"
+    assert "<|tool_call>" not in cleaned

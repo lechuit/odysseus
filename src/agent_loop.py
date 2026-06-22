@@ -2960,16 +2960,29 @@ async def stream_agent_loop(
                         if not first_token_received:
                             time_to_first_token = time.time() - total_start
                             first_token_received = True
+                        _delta = data.get("delta", "")
                         # Keep reasoning deltas in a separate accumulator so
                         # we can echo them back via `reasoning_content` on the
                         # next request (DeepSeek requires this; harmless for
                         # other vendors). Regular content still flows into
                         # round_response unchanged.
                         if data.get("thinking"):
-                            round_reasoning += data["delta"]
+                            round_reasoning += _delta
+                            if _force_answer:
+                                # Force-answer rounds are a cleanup lane after
+                                # tool replay/loop breaking. Buffer raw model
+                                # output and sanitize it below so leaked
+                                # template tool-call tokens never flash in UI.
+                                continue
                         else:
-                            round_response += data["delta"]
-                            full_response += data["delta"]
+                            round_response += _delta
+                            if _force_answer:
+                                # Do not stream raw text here: local models can
+                                # emit textual tool-call templates even when
+                                # schemas are absent. We strip them after the
+                                # round completes and then emit only clean prose.
+                                continue
+                            full_response += _delta
                         yield chunk  # Stream all rounds
                         # Detect text-fence doc streaming for rounds 2+
                         # (round 1 is handled by frontend fence detection + server fenced block path)
@@ -3039,7 +3052,11 @@ async def stream_agent_loop(
             if tool_blocks:
                 logger.info(f"[agent] force-answer round {round_num}: discarding {len(tool_blocks)} ignored tool call(s)")
             tool_blocks = []
-            if not _THINK_RE.sub("", strip_tool_blocks(round_response)).strip():
+            _force_clean = _THINK_RE.sub("", strip_tool_blocks(round_response)).strip()
+            if _force_clean:
+                yield f'data: {json.dumps({"delta": _force_clean})}\n\n'
+                full_response += _force_clean
+            else:
                 # The model burned its budget gathering data but never wrote a
                 # final answer (common with weaker models on multi-source
                 # briefings). Salvage it: one blunt non-streaming synthesis call

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 import logging
 from datetime import datetime
@@ -47,6 +48,27 @@ logger = logging.getLogger(__name__)
 # Track active streams for partial-save safety net
 _active_streams: Dict[str, dict] = {}
 _IMAGE_MODEL_PREFIXES = ("gpt-image", "dall-e", "chatgpt-image")
+_LITERAL_TOOL_CONTROL_RE = re.compile(
+    r"(?:\b(?:comando|command|orden|cmd)\b.{0,120}\b(?:literal|exact[oa]s?|exactly)\b)"
+    r"|(?:\b(?:literal|exact[oa]s?|exactly)\b.{0,120}\b(?:comando|command|bash|herramienta|tool)\b)"
+    r"|(?:\b(?:sin cambiar|no cambies|without changing)\b.{0,160}\b(?:comando|command|ruta|path|car[aá]cter|character)\b)"
+    r"|(?:\b(?:cat|ls|pwd|grep|rg|find|python|bash)\s+/(?:tmp|Users|var|etc|private|opt)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_literal_tool_control_turn(message: str) -> bool:
+    """Return True for high-precision tool-control prompts.
+
+    These turns usually contain an exact shell/path operation that must be
+    replayed byte-for-byte. Injecting memories, RAG, skills, or web context can
+    be actively harmful: a semantically similar old path may be "helpfully"
+    recalled and substituted before operation permissions even get a chance to
+    ask the user.
+    """
+    if not isinstance(message, str):
+        return False
+    return bool(_LITERAL_TOOL_CONTROL_RE.search(message.strip()))
 
 
 def _stream_set(session_id: str, **fields) -> None:
@@ -726,16 +748,21 @@ def setup_chat_routes(
             last_user_message=message,
         )
         allow_tool_preprocessing = not pre_context_tool_policy.block_all_tool_calls
-        if permission_context_note:
+        literal_tool_control = _is_literal_tool_control_turn(message)
+        if permission_context_note or literal_tool_control:
             # A permission label such as "Permitir una vez" is not a new task.
             # Do not run memory/RAG/skill preprocessing against that label; it
             # can pull unrelated context and make the resume feel like another
-            # chat leaked in. The system note + forced relevant_tools below
-            # carry the intended continuation context.
+            # chat leaked in. Likewise, a literal tool-control prompt must not
+            # be rewritten by semantically similar recalled paths/commands. The
+            # system note + forced relevant_tools below carry permission-resume
+            # context when present.
             allow_tool_preprocessing = False
             no_memory = True
             use_rag = "false"
             use_web = False
+            if literal_tool_control and not permission_context_note:
+                logger.info("Suppressing memory/RAG/skills for literal tool-control turn")
 
         # Build shared context (stream path uses enhanced_message for context preface)
         ctx = await build_chat_context(

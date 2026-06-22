@@ -55,7 +55,20 @@ _TOOL_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Pattern 5: DeepSeek DSML markup leaking into content. When deepseek
+# Pattern 5a: Chat-template tool-call tokens leaked by some local models.
+# Example:
+#   <|tool_call>call:bash{command:<|"|>cat /tmp/x<|"|>}<tool_call|>
+#
+# This format is intentionally stripped rather than executed. It is produced
+# after we have already asked a model for a tool-free answer in some local
+# llama.cpp/Gemma templates; treating it as executable would re-open the very
+# loop/safety path that force-answer rounds are trying to close.
+_CHAT_TEMPLATE_TOOL_CALL_RE = re.compile(
+    r"<\|tool_calls?\>[\s\S]*?<tool_calls?\|>",
+    re.IGNORECASE,
+)
+
+# Pattern 5b: DeepSeek DSML markup leaking into content. When deepseek
 # models can't emit structured tool_calls (e.g. we sent no tool schemas
 # that round, or the API didn't parse them), they fall back to raw
 # markup using fullwidth-pipe delimiters:
@@ -613,6 +626,7 @@ def strip_tool_blocks(text: str, skip_fenced: bool = False) -> str:
     cleaned = _TOOL_CALL_RE.sub('', cleaned)
     cleaned = _XML_TOOL_CALL_RE.sub('', cleaned)
     cleaned = _TOOL_CODE_RE.sub('', cleaned)
+    cleaned = _CHAT_TEMPLATE_TOOL_CALL_RE.sub('', cleaned)
     if not skip_fenced:
         raw_web_json = _parse_raw_web_json_lookup(cleaned)
         if raw_web_json:

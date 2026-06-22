@@ -158,6 +158,16 @@ def test_permission_resume_suppresses_unrelated_local_context():
     assert "The approved operation has now executed" in agent_source
 
 
+def test_literal_tool_control_turn_suppresses_memory_preprocessing():
+    """Exact command/path turns should not be polluted by recalled memory."""
+    route_source = _CHAT_ROUTES.read_text(encoding="utf-8")
+
+    assert "def _is_literal_tool_control_turn" in route_source
+    assert "literal_tool_control = _is_literal_tool_control_turn(message)" in route_source
+    assert "if permission_context_note or literal_tool_control:" in route_source
+    assert "Suppressing memory/RAG/skills for literal tool-control turn" in route_source
+
+
 # ── Functional tests of the disabled-tools logic ───────────────
 
 
