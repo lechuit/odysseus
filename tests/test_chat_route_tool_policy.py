@@ -148,6 +148,9 @@ def test_permission_resume_suppresses_unrelated_local_context():
     assert "if _permission_resume_context:" in agent_source
     assert "suppress_local_context = True" in agent_source
     assert "if not suppress_local_context:" in agent_source
+    assert "permission_resume_operation=permission_resume_operation" in route_source
+    assert "_tool_block_from_permission_operation(permission_resume_operation)" in agent_source
+    assert "deterministic replay of approved" in agent_source
     assert 'tool_names |= {"ask_user", "update_plan"}' in agent_source
     assert "_permission_resume_tool_replayed = False" in agent_source
     assert "permission_resume_batch_done = True" in agent_source

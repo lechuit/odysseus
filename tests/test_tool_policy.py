@@ -148,6 +148,63 @@ def test_guide_only_hides_api_function_schemas(monkeypatch):
     assert sent_tools == [None]
 
 
+def test_permission_resume_replays_stored_operation_before_model(monkeypatch):
+    _patch_loop_basics(monkeypatch)
+    order = []
+
+    async def _fake_exec(block, *args, **kwargs):
+        order.append(("exec", block.tool_type, block.content))
+        return ("bash: cat /tmp/odysseus-ui-permission-target/session_probe.txt", {
+            "output": "session-ok",
+            "exit_code": 0,
+        })
+
+    async def _fake_stream(_candidates, messages, **kwargs):
+        order.append(("llm", kwargs.get("tools")))
+        assert any("session-ok" in str(msg.get("content", "")) for msg in messages)
+        yield _delta_chunk("Leí el archivo aprobado: session-ok")
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(al, "execute_tool_block", _fake_exec, raising=False)
+    monkeypatch.setattr(al, "stream_llm_with_fallback", _fake_stream, raising=False)
+
+    chunks = _collect(
+        al.stream_agent_loop(
+            "http://local.test/v1",
+            "local-model",
+            [
+                {"role": "user", "content": "Permitir una vez"},
+                {
+                    "role": "system",
+                    "content": "OPERATION PERMISSION RESUME\nThe user approved the pending operation permission.",
+                },
+            ],
+            max_rounds=1,
+            relevant_tools={"bash"},
+            permission_resume_operation={
+                "tool": "bash",
+                "content": "cat /tmp/odysseus-ui-permission-target/session_probe.txt",
+                "description": "bash: cat /tmp/odysseus-ui-permission-target/session_probe.txt",
+            },
+            _is_teacher_run=True,
+        )
+    )
+    events = _events(chunks)
+
+    assert order[0] == (
+        "exec",
+        "bash",
+        "cat /tmp/odysseus-ui-permission-target/session_probe.txt",
+    )
+    assert order[1] == ("llm", None)
+    assert any(
+        event.get("type") == "tool_start"
+        and event.get("command") == "cat /tmp/odysseus-ui-permission-target/session_probe.txt"
+        for event in events
+    )
+    assert any("Leí el archivo aprobado" in event.get("delta", "") for event in events)
+
+
 def test_guide_only_skips_tool_retrieval(monkeypatch):
     _patch_loop_basics(monkeypatch)
     sent_tools = []

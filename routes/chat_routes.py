@@ -636,6 +636,7 @@ def setup_chat_routes(
         permission_context_note = ""
         permission_resume_tools = None
         permission_resume_decision = ""
+        permission_resume_operation: Optional[Dict[str, Any]] = None
         permission_denied_stream_message = ""
         permission_denied_metadata: Optional[Dict[str, Any]] = None
         try:
@@ -652,6 +653,9 @@ def setup_chat_routes(
             )
             if _perm_response:
                 permission_resume_decision = str(_perm_response.get("decision") or "")
+                _perm_op = _perm_response.get("operation") or {}
+                if isinstance(_perm_op, dict):
+                    permission_resume_operation = _perm_op
                 permission_context_note = permission_resume_note(_perm_response)
                 _resume_tools = _perm_response.get("resume_tools") or []
                 if permission_resume_decision != "deny" and _resume_tools:
@@ -1369,6 +1373,7 @@ def setup_chat_routes(
                         approved_plan=approved_plan or None,
                         workspace=workspace or None,
                         relevant_tools=permission_resume_tools,
+                        permission_resume_operation=permission_resume_operation,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:

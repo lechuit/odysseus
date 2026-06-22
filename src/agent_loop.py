@@ -699,6 +699,32 @@ _ROUND_LIMIT_ORIGINAL_RE = re.compile(
 _PERMISSION_RESUME_MARKER = "OPERATION PERMISSION RESUME"
 
 
+def _tool_block_from_permission_operation(operation: Optional[Dict]) -> Optional[ToolBlock]:
+    """Build the exact replay ToolBlock for a consumed permission operation.
+
+    Permission approvals are control events, not fresh user tasks.  The
+    operation-permission layer stores the concrete tool/content that triggered
+    the prompt; use that authoritative payload rather than asking the model to
+    recreate the call from text such as "Permitir una vez".
+    """
+    if not isinstance(operation, dict):
+        return None
+    tool = str(operation.get("tool") or "").strip()
+    if not tool or tool in {"ask_user", "update_plan"}:
+        return None
+    content = operation.get("content")
+    if content is None:
+        args = operation.get("args")
+        if isinstance(args, dict):
+            try:
+                content = json.dumps(args, ensure_ascii=False)
+            except (TypeError, ValueError):
+                content = ""
+        else:
+            content = ""
+    return ToolBlock(tool, str(content or ""))
+
+
 def _is_round_limit_continuation(text: str) -> bool:
     """Frontend-generated continue prompt after the agent exhausts rounds."""
     return bool(_ROUND_LIMIT_CONTINUATION_RE.search(str(text or "").strip()))
@@ -1948,6 +1974,43 @@ def _build_actions_snapshot(tool_events: list, limit: int = 8000) -> str:
     return snap[:limit] if len(snap) > limit else snap
 
 
+def _tool_output_text_for_event(tool_type: str, result: Dict, *, is_doc_tool: bool = False) -> str:
+    """Return the compact tool output text used by UI events/history."""
+    if is_doc_tool and "action" in result:
+        action = result["action"]
+        title = result.get("title", "")
+        ver = result.get("version", "?")
+        if action == "create":
+            return f'Document created: "{title}" (v{ver})'
+        if action == "edit":
+            return f'Document edited: "{title}" (v{ver}, {result.get("applied", 0)} edit(s))'
+        if action == "update":
+            return f'Document updated: "{title}" (v{ver})'
+    if "stdout" in result:
+        raw = result["stdout"] or result.get("stderr") or result.get("error", "")
+        return _truncate(raw)
+    if "output" in result:
+        return _truncate(result["output"] or "")
+    if "response" in result:
+        label = result.get("model", result.get("session_name", "AI"))
+        return _truncate(f"{label}: {result['response']}")
+    if "content" in result:
+        return _truncate(result["content"])
+    if "results" in result:
+        return _truncate(result["results"])
+    if "session_id" in result and "name" in result:
+        return f"Session created: {result['name']} (id: {result['session_id']})"
+    if "success" in result:
+        return (
+            f"Written: {result.get('path', '')}"
+            if result["success"]
+            else f"Error: {result.get('error', '')}"
+        )
+    if "error" in result:
+        return _truncate(result["error"])
+    return ""
+
+
 async def _run_verifier_subagent(
     instruction: str, actions_snapshot: str,
     *, endpoint_url: str, model: str, headers: dict,
@@ -2104,6 +2167,7 @@ async def stream_agent_loop(
     tool_policy: Optional[ToolPolicy] = None,
     workspace: Optional[str] = None,
     suppress_local_context: bool = False,
+    permission_resume_operation: Optional[Dict] = None,
     _is_teacher_run: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
@@ -2579,6 +2643,122 @@ async def stream_agent_loop(
         re.IGNORECASE,
     )
     _awaiting_user = False  # set by ask_user → end the turn and wait for a choice
+
+    # Permission approvals are control responses. Replay the stored operation
+    # deterministically before the next model call, mirroring tool-execution
+    # permission flows where "allow" resolves the pending tool promise instead of
+    # becoming a fresh semantic user turn.
+    _permission_replay_block = (
+        _tool_block_from_permission_operation(permission_resume_operation)
+        if _permission_resume_context
+        else None
+    )
+    if _permission_replay_block is not None and not _permission_resume_tool_replayed:
+        block = _permission_replay_block
+        is_doc_tool = block.tool_type in (
+            "create_document",
+            "update_document",
+            "edit_document",
+            "suggest_document",
+        )
+        cmd_display = (
+            block.content.split("\n")[0].strip()[:80]
+            if is_doc_tool
+            else block.content.strip()
+        )
+        if max_tool_calls > 0 and total_tool_calls >= max_tool_calls:
+            yield f'data: {json.dumps({"type": "budget_exceeded", "limit": max_tool_calls, "used": total_tool_calls})}\n\n'
+        else:
+            total_tool_calls += 1
+            if tool_policy and tool_policy.blocks(block.tool_type):
+                desc = f"{block.tool_type}: BLOCKED"
+                result = {
+                    "error": tool_policy.reason_for(block.tool_type),
+                    "exit_code": 1,
+                    "blocked": True,
+                }
+                logger.info(
+                    "[operation-permissions] deterministic replay blocked by active policy: %s",
+                    block.tool_type,
+                )
+            else:
+                logger.info(
+                    "[operation-permissions] deterministic replay of approved %s",
+                    block.tool_type,
+                )
+                yield (
+                    f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": 1})}\n\n'
+                )
+                _progress_q: asyncio.Queue = asyncio.Queue()
+
+                async def _push_progress(payload):
+                    await _progress_q.put(payload)
+
+                async def _run_tool():
+                    try:
+                        return await execute_tool_block(
+                            block,
+                            session_id=session_id,
+                            disabled_tools=disabled_tools,
+                            tool_policy=tool_policy,
+                            owner=owner,
+                            progress_cb=_push_progress,
+                            workspace=workspace,
+                        )
+                    finally:
+                        await _progress_q.put(None)
+
+                _tool_task = asyncio.create_task(_run_tool())
+                while True:
+                    evt = await _progress_q.get()
+                    if evt is None:
+                        break
+                    yield (
+                        f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": 1, **evt})}\n\n'
+                    )
+                desc, result = await _tool_task
+
+            output_text = _tool_output_text_for_event(
+                block.tool_type,
+                result,
+                is_doc_tool=is_doc_tool,
+            )
+            yield f'data: {json.dumps({"type": "tool_output", "tool": block.tool_type, "command": cmd_display, "output": output_text, "exit_code": result.get("exit_code")})}\n\n'
+
+            tool_event = {
+                "round": 1,
+                "tool": block.tool_type,
+                "command": cmd_display,
+                "output": output_text,
+                "exit_code": result.get("exit_code"),
+            }
+            if result.get("diff"):
+                tool_event["diff"] = result["diff"]
+            tool_events.append(tool_event)
+            if block.tool_type in _VERIFIER_EFFECTFUL_TOOLS:
+                _effectful_used = True
+
+            formatted = format_tool_result(desc, result)
+            _append_tool_results(
+                messages,
+                "",
+                [],
+                [formatted],
+                [formatted],
+                False,
+                1,
+            )
+            messages.append({
+                "role": "system",
+                "content": (
+                    "The approved operation has now executed. Do not call any "
+                    "tools in this permission-resume turn. Answer the original "
+                    "request using only the approved tool result above."
+                ),
+            })
+            _permission_resume_tool_replayed = True
+            _force_answer = True
+            yield f'data: {json.dumps({"type": "agent_step", "round": 2})}\n\n'
 
     # Document streaming state (persists across rounds)
     _doc_acc = ""          # accumulated tool-call JSON arguments
