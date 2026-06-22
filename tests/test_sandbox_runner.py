@@ -727,6 +727,10 @@ def test_sandbox_status_reports_disabled(monkeypatch, tmp_path):
     assert status["enabled"] is False
     assert status["sandboxed"] is False
     assert status["selected_backend"] == ""
+    assert status["effective_mode"] == "disabled"
+    assert status["enforcement_level"] == "operation_permissions_only"
+    assert status["command_execution_blocked"] is False
+    assert status["fallback_unsandboxed"] is False
     assert status["filesystem"]["deny_read_count"] >= 1
     assert status["warnings"] == ["sandbox is disabled; operation permissions still run before Bash/Python"]
 
@@ -739,7 +743,55 @@ def test_sandbox_status_warns_when_enabled_without_backend(monkeypatch, tmp_path
     status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
     assert status["enabled"] is True
     assert status["sandboxed"] is False
+    assert status["effective_mode"] == "unsandboxed_fallback"
+    assert status["enforcement_level"] == "operation_permissions_only_fallback"
+    assert status["command_execution_blocked"] is False
+    assert status["fallback_unsandboxed"] is True
     assert "running unsandboxed" in status["warnings"][0]
+
+
+def test_sandbox_status_reports_fail_closed_blocking(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "fail_if_unavailable": True})
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Plan9")
+
+    status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
+
+    assert status["enabled"] is True
+    assert status["sandboxed"] is False
+    assert status["effective_mode"] == "blocked"
+    assert status["enforcement_level"] == "blocked"
+    assert status["command_execution_blocked"] is True
+    assert status["fallback_unsandboxed"] is False
+    assert "no supported backend" in status["warnings"][0]
+
+
+def test_sandbox_status_reports_sandboxed_mode(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "fail_if_unavailable": True})
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/sandbox-exec" if name == "sandbox-exec" else None)
+    monkeypatch.setattr(
+        sandbox_runner,
+        "_macos_plan",
+        lambda command, cwd, **_kwargs: sandbox_runner.SandboxPlan(
+            enabled=True,
+            backend="sandbox-exec",
+            command=tuple(command),
+            reason="",
+            sandboxed=True,
+        ),
+    )
+
+    status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
+
+    assert status["sandboxed"] is True
+    assert status["effective_mode"] == "sandboxed"
+    assert status["enforcement_level"] == "os_sandbox"
+    assert status["command_execution_blocked"] is False
+    assert status["fallback_unsandboxed"] is False
 
 
 def test_sandbox_status_warns_about_glob_filesystem_paths(monkeypatch, tmp_path):

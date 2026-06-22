@@ -790,6 +790,24 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
     backends = available_backends()
     dependencies = sandbox_dependency_report()
     warnings: List[str] = []
+    command_execution_blocked = bool(
+        settings["enabled"] and settings["fail_if_unavailable"] and not plan.sandboxed
+    )
+    fallback_unsandboxed = bool(
+        settings["enabled"] and not settings["fail_if_unavailable"] and not plan.sandboxed
+    )
+    if not settings["enabled"]:
+        effective_mode = "disabled"
+        enforcement_level = "operation_permissions_only"
+    elif plan.sandboxed:
+        effective_mode = "sandboxed"
+        enforcement_level = "os_sandbox"
+    elif command_execution_blocked:
+        effective_mode = "blocked"
+        enforcement_level = "blocked"
+    else:
+        effective_mode = "unsandboxed_fallback"
+        enforcement_level = "operation_permissions_only_fallback"
     if settings["enabled"] and not plan.sandboxed:
         warnings.append(plan.reason or "sandbox requested but no backend is available")
     if settings["enabled"]:
@@ -807,6 +825,10 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
         "available_backends": {k: v for k, v in backends.items() if k != "platform"},
         "selected_backend": plan.backend,
         "sandboxed": plan.sandboxed,
+        "effective_mode": effective_mode,
+        "enforcement_level": enforcement_level,
+        "command_execution_blocked": command_execution_blocked,
+        "fallback_unsandboxed": fallback_unsandboxed,
         "reason": plan.reason,
         "dependencies": dependencies,
         "filesystem": {

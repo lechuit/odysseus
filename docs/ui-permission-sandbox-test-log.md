@@ -263,3 +263,22 @@ No pending macOS UI checks remain from this sandbox batch.
 - Validation run:
   - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 73 passed, 3 skipped on macOS.
   - broader permission/sandbox/agent suite: 173 passed, 3 skipped on macOS.
+
+## Sandbox readiness/status mode
+
+- Date: 2026-06-22
+- Reference behavior reviewed:
+  - The reference sandbox manager reports when sandboxing is requested but unavailable, and separates warning/fallback from fail-closed blocking.
+- Odysseus hardening added:
+  - `sandbox_status` now reports `effective_mode`:
+    - `disabled`: OS sandbox is off; operation permissions still apply;
+    - `sandboxed`: Bash/Python commands will run through an OS sandbox backend;
+    - `unsandboxed_fallback`: sandbox was requested but commands may run without OS sandbox because `fail_if_unavailable=false`;
+    - `blocked`: sandbox was requested in fail-closed mode and no backend is available, so Bash/Python execution should be blocked.
+  - The status payload also includes `enforcement_level`, `command_execution_blocked`, and `fallback_unsandboxed`.
+  - `manage_settings action=sandbox_status` includes the effective mode and blocked flag in its short text response.
+- Validation planned:
+  - Added unit coverage for disabled, fail-open fallback, fail-closed blocking, and sandboxed-backend status cases.
+- Validation run:
+  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 75 passed, 3 skipped on macOS.
+  - broader permission/sandbox/agent suite: 247 passed, 3 skipped on macOS.

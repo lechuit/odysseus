@@ -1139,8 +1139,10 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                 response = (
                     f"Sandbox enabled={status['enabled']}, sandboxed={status['sandboxed']}, "
                     f"backend={status.get('selected_backend') or 'none'}, "
+                    f"mode={status.get('effective_mode') or 'unknown'}, "
                     f"fail_if_unavailable={status['fail_if_unavailable']}, "
-                    f"network_deny={status['network_deny']}."
+                    f"network_deny={status['network_deny']}, "
+                    f"command_execution_blocked={status.get('command_execution_blocked', False)}."
                 )
                 if warnings:
                     response += "\nWarnings: " + "; ".join(str(w) for w in warnings)
