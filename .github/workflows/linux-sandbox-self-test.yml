@@ -1,0 +1,68 @@
+name: Linux sandbox self-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/linux-sandbox-self-test.yml'
+      - 'docs/linux-sandbox-validation.md'
+      - 'scripts/sandbox_self_test.py'
+      - 'src/sandbox_runner.py'
+      - 'tests/test_sandbox_runner.py'
+      - 'tests/test_sandbox_self_test_cli.py'
+  pull_request:
+    paths:
+      - '.github/workflows/linux-sandbox-self-test.yml'
+      - 'docs/linux-sandbox-validation.md'
+      - 'scripts/sandbox_self_test.py'
+      - 'src/sandbox_runner.py'
+      - 'tests/test_sandbox_runner.py'
+      - 'tests/test_sandbox_self_test_cli.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-sandbox-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu-runtime:
+    name: Ubuntu runtime enforcement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Linux sandbox backends
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap firejail
+          bwrap --version
+          firejail --version
+
+      - name: Report sandbox readiness
+        run: python scripts/sandbox_self_test.py --preset strict_local --status-only --pretty --fail-on-fail
+
+      - name: Run sandbox enforcement self-test
+        run: python scripts/sandbox_self_test.py --preset strict_local --pretty --fail-on-fail
+
+      - name: Install focused test dependency
+        run: python -m pip install pytest
+
+      - name: Run focused Linux sandbox tests
+        run: |
+          python -m pytest -q \
+            tests/test_sandbox_self_test_cli.py \
+            tests/test_sandbox_runner.py \
+            -k "sandbox_self_test_cli or sandbox_status or linux_bubblewrap_runtime or bubblewrap_plan or firejail_plan"

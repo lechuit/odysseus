@@ -19,6 +19,7 @@ automatically; you do not start them.
 | **Container scan: hadolint** | Mistakes and insecure patterns in the `Dockerfile` | Yes |
 | **Container scan: Trivy** | Known security holes in the Docker image | No (advisory) |
 | **CodeQL** | Real bugs in the app's own code: injection, auth mistakes, path traversal | No (advisory) |
+| **Linux sandbox self-test** | A Linux runner claiming sandbox support without actually enforcing filesystem boundaries | Yes for sandbox changes |
 
 "Blocks a merge" means a red X appears on the pull request and, once you enable
 the setting below, the **Merge** button is disabled until it is fixed.
@@ -70,10 +71,14 @@ This makes the **Merge** button refuse to work until the gating checks pass.
    - `zizmor (Actions SAST)`
    - `hadolint (Dockerfile lint)`
    - `dependency-review (PR gate)`
+   - `Ubuntu runtime enforcement` if you want Linux sandbox changes to be a
+     required gate.
 
    The first two come from the correctness CI (`ci.yml`); the rest are this
    security suite. Leave pytest, pip-audit, Trivy, and CodeQL unchecked so they
-   stay advisory.
+   stay advisory. The Linux sandbox self-test runs only for sandbox-related
+   paths and can be required once the project treats OS sandboxing as a release
+   gate.
 7. Also enable **Require a pull request before merging** and **Require review
    from Code Owners** (this uses the `.github/CODEOWNERS` file so every change
    needs your sign-off).

@@ -106,3 +106,18 @@ docker run --rm -it \
 ```
 
 Some containers intentionally disallow the namespaces required by `bubblewrap`; in that case the expected outcome is a clear status/self-test failure explaining that installed Linux backends failed runtime smoke tests. That is still useful evidence: it proves Odysseus is not silently claiming to be sandboxed.
+
+## GitHub Actions validation
+
+The repository also includes a dedicated workflow:
+
+- `.github/workflows/linux-sandbox-self-test.yml`
+
+It runs on Ubuntu when sandbox-related files change, and it can be triggered manually from GitHub Actions with **Run workflow**. The workflow installs `bubblewrap` and `firejail`, runs:
+
+```bash
+python scripts/sandbox_self_test.py --preset strict_local --status-only --pretty --fail-on-fail
+python scripts/sandbox_self_test.py --preset strict_local --pretty --fail-on-fail
+```
+
+Then it runs the focused sandbox tests. A passing `Ubuntu runtime enforcement` job is the strongest automated evidence that the Linux backend is not just present, but enforcing filesystem boundaries.
