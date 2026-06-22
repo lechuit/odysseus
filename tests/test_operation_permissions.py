@@ -784,6 +784,7 @@ async def test_execute_tool_block_passes_approved_bash_paths_to_sandbox(monkeypa
     monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
     monkeypatch.setattr("src.tool_execution.get_mcp_manager", lambda: None)
     monkeypatch.setattr("src.sandbox_runner.build_sandbox_plan", fake_build_sandbox_plan)
+    monkeypatch.setattr("src.sandbox_runner.fail_if_unavailable", lambda: False)
     monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
     monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
     monkeypatch.setattr(op, "get_persistent_rules", lambda: [
