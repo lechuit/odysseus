@@ -178,10 +178,84 @@ class TestMaybeCompactFourthMessage:
         compacted_messages, context_length, was_compacted = result
         assert isinstance(compacted_messages, list)
         assert was_compacted is True
-        # The summary the model produced is present and a system message.
+        # The summary the model produced is present in the transient
+        # model-facing projection. It must not be elevated to system role,
+        # because summarized user/tool text is context data, not instruction.
         assert any(
-            m.get("role") == "system" and "compact summary text" in (m.get("content") or "")
+            m.get("role") == "user"
+            and "compact summary text" in (m.get("content") or "")
+            and (m.get("metadata") or {}).get("trusted") is False
             for m in compacted_messages
+        )
+
+    def test_does_not_mutate_or_rewrite_session_history(self):
+        messages = self._four_turn_history_with_tool_call()
+        session = type("FakeSession", (), {})()
+        session.history = ["full", "visible", "history"]
+        before_history = list(session.history)
+
+        orig_ctx = cc.get_context_length
+        orig_call = cc.llm_call_async
+        orig_resolve = cc.resolve_endpoint
+        orig_update = cc._update_session_history
+
+        async def _fake_summary(*a, **k):
+            return "compact summary text"
+
+        def _must_not_rewrite(*a, **k):
+            raise AssertionError("automatic compaction must not rewrite persisted history")
+
+        cc.get_context_length = lambda url, model: 500
+        cc.llm_call_async = _fake_summary
+        cc.resolve_endpoint = lambda which, owner=None: (None, None, None)
+        cc._update_session_history = _must_not_rewrite
+        try:
+            compacted_messages, _context_length, was_compacted = asyncio.run(
+                maybe_compact(
+                    session=session,
+                    endpoint_url="http://local/v1/chat/completions",
+                    model="local-model",
+                    messages=list(messages),
+                    headers={},
+                )
+            )
+        finally:
+            cc.get_context_length = orig_ctx
+            cc.llm_call_async = orig_call
+            cc.resolve_endpoint = orig_resolve
+            cc._update_session_history = orig_update
+
+        assert was_compacted is True
+        assert compacted_messages != messages
+        assert session.history == before_history
+
+    def test_projection_sanitizes_tool_pairs_cut_by_compaction_boundary(self):
+        messages = [
+            {"role": "system", "content": "You are a helpful agent. " * 200},
+            {"role": "user", "content": "old user"},
+            {"role": "assistant", "content": "old assistant"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "cut", "type": "function",
+                             "function": {"name": "bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "cut", "content": "orphan if split here"},
+            {"role": "assistant", "content": "after tool"},
+            {"role": "user", "content": "latest"},
+        ]
+
+        compacted_messages, _context_length, was_compacted = self._run(messages)
+
+        assert was_compacted is True
+        assert not (
+            compacted_messages[0].get("role") == "tool"
+            or any(
+                m.get("role") == "tool"
+                and not (
+                    i > 0
+                    and compacted_messages[i - 1].get("role") == "assistant"
+                    and compacted_messages[i - 1].get("tool_calls")
+                )
+                for i, m in enumerate(compacted_messages)
+            )
         )
 
     def test_handles_multimodal_list_content(self):

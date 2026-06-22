@@ -23,10 +23,19 @@ from unittest.mock import MagicMock
 for mod in [
     'sqlalchemy', 'sqlalchemy.orm', 'sqlalchemy.ext', 'sqlalchemy.ext.declarative',
     'sqlalchemy.ext.hybrid', 'sqlalchemy.sql', 'sqlalchemy.sql.expression',
-    'src.database', 'src.agent_tools', 'core.models', 'core.database',
+    'src.database', 'core.models', 'core.database',
 ]:
     if mod not in sys.modules:
         sys.modules[mod] = MagicMock()
+
+# This test needs the real _append_tool_results producer from src.agent_loop.
+# Do not stub src.agent_tools here: agent_loop imports parse/strip helpers from
+# it at module load, and leaving those as MagicMocks contaminates later parser
+# and agent-loop tests in the same pytest process.
+if isinstance(sys.modules.get('src.agent_tools'), MagicMock):
+    sys.modules.pop('src.agent_tools', None)
+if isinstance(sys.modules.get('src.agent_loop'), MagicMock):
+    sys.modules.pop('src.agent_loop', None)
 
 from src.agent_loop import _append_tool_results
 from src.llm_core import _sanitize_llm_messages
@@ -138,6 +147,5 @@ def test_build_anthropic_payload_alternating_roles():
     assert len(anth_messages) == 1
     assert anth_messages[0]["role"] == "user"
     assert anth_messages[0]["content"] == "web search results\n\nuser query"
-
 
 

@@ -1835,6 +1835,65 @@ def _append_tool_results(
         )
 
 
+_REQUIRED_RESPONSE_PREFIX_RE = re.compile(
+    r"(?:"
+    r"(?:empiece|comience|inicie|comienza|start|starts|begin|begins)"
+    r"\s+(?:exactamente\s+|exactly\s+)?(?:por|con|with)"
+    r"|(?:prefijo|prefix)\s+(?:exacto|exact|required)?\s*(?::|=)?"
+    r")\s+[`'\"“”‘’]?([A-Za-z0-9_][A-Za-z0-9_.:/-]{0,120})",
+    re.IGNORECASE,
+)
+
+
+def _extract_required_response_prefix(user_request: str) -> str:
+    """Return an explicitly requested response prefix, if the user provided one."""
+    if not isinstance(user_request, str) or not user_request.strip():
+        return ""
+    match = _REQUIRED_RESPONSE_PREFIX_RE.search(user_request)
+    if not match:
+        return ""
+    return (match.group(1) or "").rstrip("`'\"“”‘’.,;:").strip()
+
+
+def _deterministic_tool_completion_answer(
+    tool_events: list,
+    user_request: str = "",
+) -> str:
+    """Build a narrow fallback answer for literal-tool/permission-resume turns.
+
+    This is intentionally conservative. It only summarizes the latest already
+    executed tool event; it does not try to solve arbitrary open-ended tasks.
+    The goal is to avoid showing leaked chat-template tool markup when a weak
+    local model ignores a tool-free final-answer instruction after the requested
+    operation already ran.
+    """
+    latest = None
+    for event in reversed(tool_events or []):
+        if isinstance(event, dict) and event.get("tool"):
+            latest = event
+            break
+    if not latest:
+        return ""
+
+    tool = str(latest.get("tool") or "tool")
+    output = str(latest.get("output") or "").strip()
+    exit_code = latest.get("exit_code")
+    prefix = _extract_required_response_prefix(user_request)
+
+    if exit_code not in (None, 0):
+        base = f"{tool} finished with exit code {exit_code}"
+        if output:
+            base += f": {output}"
+    elif output:
+        base = f"{tool} completed successfully: {output}"
+    else:
+        base = f"{tool} completed successfully."
+
+    if prefix:
+        return f"{prefix} {base}"
+    return base
+
+
 def _empty_microcompact_stats() -> Dict[str, int]:
     return {
         "passes": 0,
@@ -3168,40 +3227,59 @@ async def stream_agent_loop(
                 yield f'data: {json.dumps({"delta": _force_clean})}\n\n'
                 full_response += _force_clean
             else:
-                # The model burned its budget gathering data but never wrote a
-                # final answer (common with weaker models on multi-source
-                # briefings). Salvage it: one blunt non-streaming synthesis call
-                # over the full conversation (which already holds every tool
-                # result) before falling back to the canned apology.
-                _synth = ""
-                try:
-                    from src.llm_core import llm_call_async
-                    _synth_messages = list(messages) + [{
-                        "role": "user",
-                        "content": (
-                            "Using ONLY the information already gathered above, write "
-                            "the final answer for the user now. Do NOT call any tools, "
-                            "do NOT explain your reasoning — output the finished response "
-                            "directly. If some data couldn't be fetched, just work with "
-                            "what you have and note what's missing in one short line."
-                        ),
-                    }]
-                    _raw = await llm_call_async(
-                        url=endpoint_url, model=model, messages=_synth_messages,
-                        headers=headers, temperature=0.3, max_tokens=max_tokens, timeout=60,
+                _deterministic_answer = ""
+                if strict_tool_turn or _permission_resume_context:
+                    _deterministic_answer = _deterministic_tool_completion_answer(
+                        tool_events,
+                        _last_user,
                     )
-                    _synth = _THINK_RE.sub("", strip_tool_blocks(_raw or "")).strip()
-                except Exception as _e:
-                    logger.warning(f"[agent] grace synthesis failed: {_e}")
-                if _synth:
-                    yield f'data: {json.dumps({"delta": _synth})}\n\n'
-                    full_response += _synth
+                if _deterministic_answer:
+                    logger.info(
+                        "[agent] force-answer round %s: using deterministic %s completion fallback",
+                        round_num,
+                        "strict-tool" if strict_tool_turn else "permission-resume",
+                    )
+                    yield f'data: {json.dumps({"delta": _deterministic_answer})}\n\n'
+                    full_response += _deterministic_answer
+                    # Nothing useful remains in this round's text; continue
+                    # through the normal no-tool completion path below so
+                    # metrics/history finalization remains centralized.
+                    round_response = ""
                 else:
-                    _fb = ("I gathered some search results but couldn't pull a clean "
-                           "answer together. Want me to try a more specific question, "
-                           "or summarize what I did find?")
-                    yield f'data: {json.dumps({"delta": _fb})}\n\n'
-                    full_response += _fb
+                    # The model burned its budget gathering data but never wrote a
+                    # final answer (common with weaker models on multi-source
+                    # briefings). Salvage it: one blunt non-streaming synthesis call
+                    # over the full conversation (which already holds every tool
+                    # result) before falling back to the canned apology.
+                    _synth = ""
+                    try:
+                        from src.llm_core import llm_call_async
+                        _synth_messages = list(messages) + [{
+                            "role": "user",
+                            "content": (
+                                "Using ONLY the information already gathered above, write "
+                                "the final answer for the user now. Do NOT call any tools, "
+                                "do NOT explain your reasoning — output the finished response "
+                                "directly. If some data couldn't be fetched, just work with "
+                                "what you have and note what's missing in one short line."
+                            ),
+                        }]
+                        _raw = await llm_call_async(
+                            url=endpoint_url, model=model, messages=_synth_messages,
+                            headers=headers, temperature=0.3, max_tokens=max_tokens, timeout=60,
+                        )
+                        _synth = _THINK_RE.sub("", strip_tool_blocks(_raw or "")).strip()
+                    except Exception as _e:
+                        logger.warning(f"[agent] grace synthesis failed: {_e}")
+                    if _synth:
+                        yield f'data: {json.dumps({"delta": _synth})}\n\n'
+                        full_response += _synth
+                    else:
+                        _fb = ("I gathered some search results but couldn't pull a clean "
+                               "answer together. Want me to try a more specific question, "
+                               "or summarize what I did find?")
+                        yield f'data: {json.dumps({"delta": _fb})}\n\n'
+                        full_response += _fb
 
         # ── Fallback: auto-create document if model dumped large code in chat ──
         # If no create_document tool was used, check for big code blocks in text

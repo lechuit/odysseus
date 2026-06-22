@@ -40,6 +40,8 @@ try:
         _compute_final_metrics,
         _append_tool_results,
         _prepare_agent_round_context,
+        _deterministic_tool_completion_answer,
+        _extract_required_response_prefix,
         _MCP_KEYWORDS,
     )
     _IMPORTED_AGENT_LOOP = sys.modules.get("src.agent_loop")
@@ -461,6 +463,47 @@ def test_prepare_agent_round_context_microcompacts_between_tool_rounds():
         and m.get("content") == "[Old tool result content cleared to preserve context]"
         for m in prepared
     )
+
+
+def test_extract_required_response_prefix_from_spanish_exact_prefix_request():
+    request = (
+        "Ejecuta pwd y luego responde con una línea que empiece exactamente "
+        "por OK_CONTEXT_ARCH_AGENT_UI."
+    )
+
+    assert _extract_required_response_prefix(request) == "OK_CONTEXT_ARCH_AGENT_UI"
+
+
+def test_deterministic_tool_completion_fallback_respects_requested_prefix():
+    events = [{
+        "round": 1,
+        "tool": "bash",
+        "command": "pwd",
+        "output": "/tmp/workspace",
+        "exit_code": 0,
+    }]
+
+    answer = _deterministic_tool_completion_answer(
+        events,
+        "responde con una línea que empiece exactamente por OK_CONTEXT_ARCH_AGENT_UI",
+    )
+
+    assert answer.startswith("OK_CONTEXT_ARCH_AGENT_UI ")
+    assert "bash completed successfully" in answer
+    assert "/tmp/workspace" in answer
+
+
+def test_deterministic_tool_completion_fallback_reports_failed_tool():
+    events = [{
+        "tool": "bash",
+        "command": "false",
+        "output": "boom",
+        "exit_code": 2,
+    }]
+
+    answer = _deterministic_tool_completion_answer(events)
+
+    assert answer == "bash finished with exit code 2: boom"
 
 
 # ---------------------------------------------------------------------------

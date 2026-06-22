@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from src.model_context import get_context_length, estimate_tokens
 from src.llm_core import llm_call_async
 from src.endpoint_resolver import resolve_endpoint
+from src.prompt_security import untrusted_context_message
 from core.models import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -648,7 +649,13 @@ async def maybe_compact(
     headers: Optional[Dict] = None,
     owner: Optional[str] = None,
 ) -> tuple:
-    """Check context usage and compact if above threshold.
+    """Check context usage and compact the transient model-facing view.
+
+    This intentionally does *not* rewrite ``session.history`` or the persisted
+    chat rows.  The full transcript remains the source of truth for reload/UI,
+    while this function returns a smaller projection for the next model call.
+    That mirrors the safer transcript architecture used by code-source-main:
+    persisted history and model-facing context are separate concerns.
 
     Returns (messages, context_length, was_compacted).
     """
@@ -725,24 +732,21 @@ async def maybe_compact(
         # caller nothing was summarized; trim_for_context handles length.
         return messages, context_length, False
 
-    summary_msg = {
-        "role": "system",
-        "content": f"[Conversation summary — earlier messages were compacted]\n{summary}",
-    }
+    # Treat the generated summary as conversation data, not a new system
+    # instruction.  The summary may include user/tool text; wrapping it as
+    # untrusted user-role context avoids elevating that text above the real
+    # preset/system prompt while still letting the model use it as reference.
+    summary_msg = untrusted_context_message(
+        "conversation summary — earlier messages were compacted",
+        f"[Conversation summary — earlier messages were compacted]\n{summary}",
+    )
 
-    compacted = system_msgs + [summary_msg] + recent
-
-    # Update session history to match. Pass len(system_msgs) so the
-    # recent_history slice in _update_session_history uses the correct
-    # offset — session.history INCLUDES the system messages, but
-    # split_point is indexed against convo_msgs which does NOT. Without
-    # this, the slice drops the leading system message(s).
-    _update_session_history(session, split_point, summary, system_msg_count=len(system_msgs))
+    compacted = _sanitize_tool_messages(system_msgs + [summary_msg] + recent)
 
     new_used = estimate_tokens(compacted)
     logger.info(
-        f"Compacted: {used} -> {new_used} tokens "
-        f"({len(older)} messages summarized, {len(recent)} kept)"
+        f"Compacted model context projection: {used} -> {new_used} tokens "
+        f"({len(older)} messages summarized, {len(recent)} kept; persisted history unchanged)"
     )
 
     return compacted, context_length, True
@@ -750,7 +754,12 @@ async def maybe_compact(
 
 def _update_session_history(session, split_point: int, summary: str,
                             system_msg_count: int = 0):
-    """Update the in-memory session history after compaction.
+    """Deprecated destructive compaction helper.
+
+    Automatic context compaction must not call this: it is kept only for
+    backward compatibility with old tests/imports and possible manual flows.
+    Prefer returning a model-facing projection from ``maybe_compact`` while
+    leaving ``session.history`` untouched.
 
     `split_point` is the index in `convo_msgs` (system-stripped). The
     in-memory `session.history` includes leading system messages, so the
