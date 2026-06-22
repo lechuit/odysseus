@@ -550,7 +550,8 @@ def _bash_rule_matches(rule: Mapping[str, Any], op: Operation, match: str, patte
     behavior = str(rule.get("behavior") or "").strip().lower()
     candidates = _bash_rule_candidate_values(op.command or op.value, behavior=behavior)
     if match == "exact":
-        return any(candidate == pattern for candidate in candidates)
+        command = op.command or op.value
+        return any(candidate == pattern for candidate in candidates) or _bash_exact_command_equivalent(command, pattern)
     if match == "prefix":
         wanted = pattern.strip()
         return bool(wanted) and any(candidate.strip().startswith(wanted) for candidate in candidates)
@@ -825,14 +826,53 @@ _BASH_DEVICE_PATHS = {
     "/proc/self/fd/1",
     "/proc/self/fd/2",
 }
+_SHELL_CONTROL_SPLIT_RE = re.compile(r"\s*(&&|\|\||\||;|\n)\s*")
 
 
-def _split_shell_segments(command: str) -> List[str]:
+def _split_shell_segments_with_ops(command: str) -> Tuple[List[str], List[str]]:
     # Split on common shell control operators. This is intentionally a
     # conservative lexer, not a full shell parser: false positives result in
     # an approval prompt, while false negatives can execute. Include single
     # pipes so "cat script | bash" is evaluated as a shell invocation.
-    return [seg.strip() for seg in re.split(r"\s*(?:&&|\|\||\||;|\n)\s*", command or "") if seg.strip()]
+    raw_parts = _SHELL_CONTROL_SPLIT_RE.split(command or "")
+    segments: List[str] = []
+    ops: List[str] = []
+    expect_segment = True
+    for part in raw_parts:
+        if part == "":
+            continue
+        if expect_segment:
+            segment = part.strip()
+            if segment:
+                segments.append(segment)
+                expect_segment = False
+        else:
+            ops.append(part)
+            expect_segment = True
+    return segments, ops[: max(0, len(segments) - 1)]
+
+
+def _split_shell_segments(command: str) -> List[str]:
+    return _split_shell_segments_with_ops(command)[0]
+
+
+def _canonical_bash_command(command: str) -> Optional[Tuple[Tuple[str, ...], Tuple[Tuple[str, ...], ...]]]:
+    segments, ops = _split_shell_segments_with_ops(command)
+    if not segments:
+        return None
+    canonical_segments: List[Tuple[str, ...]] = []
+    for segment in segments:
+        parts = _shell_parts(segment)
+        if not parts:
+            return None
+        canonical_segments.append(tuple(parts))
+    return tuple(ops), tuple(canonical_segments)
+
+
+def _bash_exact_command_equivalent(left: str, right: str) -> bool:
+    left_canon = _canonical_bash_command(left)
+    right_canon = _canonical_bash_command(right)
+    return bool(left_canon and right_canon and left_canon == right_canon)
 
 
 def _has_output_redirection(segment: str) -> bool:

@@ -130,6 +130,22 @@ def test_bash_allow_rule_does_not_expand_to_env_or_subcommands(monkeypatch):
     assert compound.behavior == "passthrough"
 
 
+def test_bash_exact_rule_tolerates_quote_normalization(monkeypatch):
+    from src import operation_permissions as op
+
+    approved = "echo sandbox-ui-ok > ../out.txt && cat ../out.txt"
+    retried = "echo sandbox-ui-ok > ../out.txt && cat '../out.txt'"
+    extra = "echo sandbox-ui-ok > ../out.txt && cat '../out.txt' && rm ../out.txt"
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: False)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "allow", "tool": "bash", "match": "exact", "pattern": approved})
+    ])
+
+    assert op.evaluate_tool_permission("bash", retried).behavior == "allow"
+    assert op.evaluate_tool_permission("bash", extra).behavior == "passthrough"
+
+
 def test_bash_too_many_segments_asks(monkeypatch):
     from src import operation_permissions as op
 
