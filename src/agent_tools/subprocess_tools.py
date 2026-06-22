@@ -105,11 +105,18 @@ class BashTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import agent_cwd, _truncate
         from src.operation_permissions import record_sandbox_run
-        from src.sandbox_runner import build_sandbox_plan, fail_if_unavailable, sandbox_enabled
+        from src.sandbox_runner import (
+            bare_git_scrub_candidates,
+            build_sandbox_plan,
+            fail_if_unavailable,
+            sandbox_enabled,
+            scrub_planted_bare_git_files,
+        )
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
         sandbox_allow = ctx.get("sandbox_allow") or {}
         cwd = agent_cwd()
+        scrub_candidates = bare_git_scrub_candidates(cwd) if sandbox_enabled() else []
         plan = build_sandbox_plan(
             ("/bin/sh", "-c", content),
             cwd=cwd,
@@ -150,6 +157,8 @@ class BashTool:
                     os.unlink(profile_path)
                 except OSError:
                     pass
+            if plan.sandboxed:
+                scrub_planted_bare_git_files(cwd, scrub_candidates)
         if timed_out:
             return {"error": f"bash: timed out after {DEFAULT_BASH_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
         output = stdout.rstrip()
@@ -165,11 +174,18 @@ class PythonTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import agent_cwd, _truncate
         from src.operation_permissions import record_sandbox_run
-        from src.sandbox_runner import build_sandbox_plan, fail_if_unavailable, sandbox_enabled
+        from src.sandbox_runner import (
+            bare_git_scrub_candidates,
+            build_sandbox_plan,
+            fail_if_unavailable,
+            sandbox_enabled,
+            scrub_planted_bare_git_files,
+        )
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
         sandbox_allow = ctx.get("sandbox_allow") or {}
         cwd = agent_cwd()
+        scrub_candidates = bare_git_scrub_candidates(cwd) if sandbox_enabled() else []
         command = ((sys.executable or "python"), "-I", "-c", content)
         plan = build_sandbox_plan(
             command,
@@ -202,6 +218,8 @@ class PythonTool:
                     os.unlink(profile_path)
                 except OSError:
                     pass
+            if plan.sandboxed:
+                scrub_planted_bare_git_files(cwd, scrub_candidates)
         if timed_out:
             return {"error": f"python: timed out after {DEFAULT_PYTHON_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
         output = stdout.rstrip()

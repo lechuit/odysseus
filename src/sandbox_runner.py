@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
+_BARE_GIT_GUARD_NAMES = ("HEAD", "objects", "refs", "hooks", "config")
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,10 @@ def _real(path: str) -> str:
     return os.path.realpath(os.path.expanduser(str(path)))
 
 
+def _abs_no_follow(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(str(path)))
+
+
 def _unique_real(paths: Sequence[str]) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
@@ -203,6 +208,67 @@ def _odysseus_sensitive_paths() -> Tuple[List[str], List[str]]:
     return deny_read, deny_write
 
 
+def _existing_bare_git_guard_paths(cwd: str) -> List[str]:
+    """Return bare-repo sentinel paths that already exist at workspace root.
+
+    Git treats a directory with top-level ``HEAD`` + ``objects`` + ``refs`` as
+    a bare repository.  Existing sentinel paths are made read-only in the
+    sandbox so a sandboxed process cannot modify them into an escape gadget.
+    Non-existent sentinels are handled by post-command scrubbing instead of
+    bind-mounting placeholders, because doing so can leave host-side stubs or
+    break normal Git commands.
+    """
+
+    root = _real(cwd or os.getcwd())
+    out: List[str] = []
+    for name in _BARE_GIT_GUARD_NAMES:
+        path = os.path.join(root, name)
+        if os.path.lexists(path):
+            out.append(path)
+    return out
+
+
+def bare_git_scrub_candidates(cwd: str) -> List[str]:
+    """Capture bare-repo sentinel paths absent before a sandboxed command."""
+
+    root = _real(cwd or os.getcwd())
+    out: List[str] = []
+    for name in _BARE_GIT_GUARD_NAMES:
+        path = os.path.join(root, name)
+        if not os.path.lexists(path):
+            out.append(path)
+    return out
+
+
+def scrub_planted_bare_git_files(cwd: str, candidates: Sequence[str]) -> List[str]:
+    """Remove bare-repo sentinels planted by a sandboxed command.
+
+    The sandbox allows normal writes inside the workspace.  A malicious command
+    could exploit that by planting top-level bare-repo files and waiting for a
+    later unsandboxed Git call to interpret the workspace as a bare repo.  Only
+    paths that were absent in ``bare_git_scrub_candidates`` are eligible here,
+    so pre-existing user files are preserved.
+    """
+
+    root = _real(cwd or os.getcwd())
+    allowed = {os.path.normcase(os.path.join(root, name)) for name in _BARE_GIT_GUARD_NAMES}
+    removed: List[str] = []
+    for raw in candidates or []:
+        path = _abs_no_follow(raw)
+        if os.path.normcase(path) not in allowed or not os.path.lexists(path):
+            continue
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.unlink(path)
+            removed.append(path)
+            logger.info("[sandbox] scrubbed planted bare-repo sentinel: %s", path)
+        except OSError as exc:
+            logger.warning("[sandbox] failed to scrub planted bare-repo sentinel %s: %s", path, exc)
+    return removed
+
+
 def _default_deny_paths(cwd: str) -> Tuple[List[str], List[str]]:
     home = os.path.expanduser("~")
     deny_read = [
@@ -248,6 +314,7 @@ def _default_deny_paths(cwd: str) -> Tuple[List[str], List[str]]:
     app_deny_read, app_deny_write = _odysseus_sensitive_paths()
     deny_read.extend(app_deny_read)
     deny_write.extend(app_deny_write)
+    deny_write.extend(_existing_bare_git_guard_paths(cwd))
     return _unique_real(deny_read), _unique_real(deny_write)
 
 

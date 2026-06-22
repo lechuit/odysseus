@@ -224,6 +224,53 @@ def test_macos_sandbox_exec_profile_runs_and_enforces_paths(monkeypatch, tmp_pat
     os.unlink(outside)
 
 
+def test_bare_git_scrub_candidates_remove_only_planted_sentinels(tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    preexisting_config = ws / "config"
+    preexisting_config.write_text("keep me", encoding="utf-8")
+
+    candidates = sandbox_runner.bare_git_scrub_candidates(str(ws))
+    assert str(preexisting_config) not in candidates
+
+    symlink_target = tmp_path / "head-target"
+    symlink_target.write_text("do not remove target", encoding="utf-8")
+    os.symlink(symlink_target, ws / "HEAD")
+    (ws / "objects").mkdir()
+    (ws / "refs").mkdir()
+    (ws / "hooks").mkdir()
+
+    removed = sandbox_runner.scrub_planted_bare_git_files(str(ws), candidates)
+
+    assert set(map(os.path.basename, removed)) == {"HEAD", "objects", "refs", "hooks"}
+    assert not (ws / "HEAD").exists()
+    assert symlink_target.read_text(encoding="utf-8") == "do not remove target"
+    assert not (ws / "objects").exists()
+    assert not (ws / "refs").exists()
+    assert not (ws / "hooks").exists()
+    assert preexisting_config.read_text(encoding="utf-8") == "keep me"
+
+
+def test_existing_bare_git_sentinels_are_write_denied(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (ws / "objects").mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "network": {"deny": False}})
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws))
+
+    assert plan is not None
+    command = list(plan.command)
+    assert _has_arg_pair(command, "--ro-bind", str(ws / "HEAD"))
+    assert _has_arg_pair(command, "--ro-bind", str(ws / "objects"))
+
+
 @pytest.mark.skipif(platform.system() != "Linux" or not shutil.which("bwrap"), reason="requires Linux bubblewrap")
 def test_linux_bubblewrap_runtime_enforces_paths(monkeypatch, tmp_path):
     from src import sandbox_runner

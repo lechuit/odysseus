@@ -219,3 +219,18 @@ No pending macOS UI checks remain from this sandbox batch.
   - compound Bash commands that change directory before another command now require review;
   - Git control paths are extracted and passed through the existing workspace/protected-path checks.
   - strict literal Bash turns preserve extracted command arguments instead of trusting model transcription.
+
+## Bare Git sentinel sandbox hardening
+
+- Date: 2026-06-22
+- Reference behavior reviewed:
+  - sandboxed commands should not be able to plant top-level bare-repository sentinel paths such as `HEAD`, `objects`, `refs`, `hooks`, or `config` and then rely on later unsandboxed Git calls seeing the workspace as a bare repo.
+- Odysseus hardening added:
+  - existing top-level bare Git sentinel paths are included in sandbox deny-write paths;
+  - Bash/Python capture absent sentinel paths before sandboxed execution;
+  - after a sandboxed command finishes, newly planted sentinel files/directories are scrubbed;
+  - planted sentinel symlinks are removed without following/deleting their targets;
+  - pre-existing user files are preserved because only absent-before-execution candidates are eligible.
+- Validation run:
+  - `tests/test_sandbox_runner.py tests/test_operation_permissions.py tests/test_subprocess_sandbox_enforcement.py`: 68 passed, 2 skipped on macOS.
+  - broader permission/sandbox/agent suite: 168 passed, 2 skipped on macOS.
