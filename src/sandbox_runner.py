@@ -373,17 +373,23 @@ def _linux_bwrap_plan(
     args: List[str] = [
         bwrap,
         "--die-with-parent",
-        "--dev-bind", "/dev", "/dev",
-        "--proc", "/proc",
-        "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/bin", "/bin",
-        "--ro-bind", "/lib", "/lib",
-        "--ro-bind", "/lib64", "/lib64",
-        "--ro-bind", "/etc", "/etc",
-        "--tmpfs", "/tmp",
     ]
     if _network_denied() and not extra_allow_network:
-        args.insert(2, "--unshare-net")
+        args.append("--unshare-net")
+    args.extend(
+        [
+            "--dev-bind", "/dev", "/dev",
+            "--proc", "/proc",
+            "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/bin", "/bin",
+            "--ro-bind", "/lib", "/lib",
+            "--ro-bind", "/lib64", "/lib64",
+            "--ro-bind", "/etc", "/etc",
+            "--tmpfs", "/tmp",
+        ]
+    )
+    for path in _linux_parent_dirs_for_mounts([*allow_read, *allow_write, *deny_read, *deny_write]):
+        args.extend(["--dir", path])
     allow_write_set = set(allow_write)
     for path in allow_read:
         if path in allow_write_set:
@@ -408,6 +414,55 @@ def _linux_bwrap_plan(
     return SandboxPlan(enabled=True, backend="bubblewrap", command=tuple(args), sandboxed=True)
 
 
+_LINUX_PREMOUNTED_DESTS = ("/dev", "/proc", "/usr", "/bin", "/lib", "/lib64", "/etc")
+
+
+def _linux_parent_dirs_for_mounts(paths: Sequence[str]) -> List[str]:
+    """Return destination parent directories bubblewrap must create.
+
+    Bubblewrap starts from an almost-empty root.  Binding a workspace such as
+    ``/home/me/project`` or an approved outside file like
+    ``/home/me/secret.txt`` can fail unless ``/home`` and ``/home/me`` exist
+    inside the namespace first.  System paths that are already mounted read-only
+    are intentionally skipped, while nested temp dirs are recreated after the
+    ``/tmp`` tmpfs is mounted.
+    """
+
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _skip_dir(path: str) -> bool:
+        if path in {"", "/", "/tmp"}:
+            return True
+        for mounted in _LINUX_PREMOUNTED_DESTS:
+            if path == mounted or path.startswith(mounted.rstrip("/") + "/"):
+                return True
+        return False
+
+    for raw in paths:
+        if not raw:
+            continue
+        path = _real(raw)
+        if os.path.isdir(path):
+            parent = os.path.dirname(path.rstrip("/")) or "/"
+        else:
+            parent = os.path.dirname(path) or "/"
+        pieces: List[str] = []
+        cursor = parent
+        while cursor and cursor != "/":
+            if not _skip_dir(cursor):
+                pieces.append(cursor)
+            next_cursor = os.path.dirname(cursor.rstrip("/")) or "/"
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
+        for directory in reversed(pieces):
+            if directory not in seen:
+                seen.add(directory)
+                out.append(directory)
+    return out
+
+
 def _linux_firejail_plan(
     command: Sequence[str],
     cwd: str,
@@ -419,17 +474,27 @@ def _linux_firejail_plan(
     firejail = shutil.which("firejail")
     if not firejail:
         return None
-    _, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
+    allow_read = _unique_real([*allow_read, *_extra_paths(extra_allow_read)])
     allow_write = _unique_real([*allow_write, *_extra_paths(extra_allow_write)])
-    private = allow_write[0] if allow_write else cwd
+    private = cwd
     args_list = [firejail, "--quiet", f"--private={private}", "--noprofile"]
     if _network_denied() and not extra_allow_network:
         args_list.append("--net=none")
+    writable = set(allow_write)
+    for path in allow_read:
+        if os.path.exists(path) and path != private:
+            args_list.append(f"--whitelist={path}")
+    for path in allow_write:
+        if os.path.exists(path):
+            if path != private:
+                args_list.append(f"--whitelist={path}")
+            args_list.append(f"--read-write={path}")
     for path in deny_read:
         if os.path.exists(path):
             args_list.append(f"--blacklist={path}")
     for path in deny_write:
-        if os.path.exists(path):
+        if os.path.exists(path) and path not in writable:
             args_list.append(f"--read-only={path}")
     args = (*args_list, "--", *command)
     return SandboxPlan(enabled=True, backend="firejail", command=args, sandboxed=True)
@@ -501,6 +566,41 @@ def available_backends() -> Dict[str, bool]:
     }
 
 
+def sandbox_dependency_report() -> Dict[str, Any]:
+    """Return dependency diagnostics for the currently supported OS backends."""
+
+    backends = available_backends()
+    system = str(backends.get("platform") or "")
+    errors: List[str] = []
+    warnings: List[str] = []
+    install_hint = ""
+
+    if system == "darwin":
+        if not backends.get("sandbox-exec"):
+            errors.append("macOS sandbox-exec is not available")
+            install_hint = "sandbox-exec is provided by macOS; check the OS installation or disable fail_if_unavailable"
+    elif system == "linux":
+        has_bwrap = bool(backends.get("bubblewrap"))
+        has_firejail = bool(backends.get("firejail"))
+        if not has_bwrap and not has_firejail:
+            errors.append("Linux sandbox requires bubblewrap or firejail")
+            install_hint = "install bubblewrap or firejail, for example: apt install bubblewrap firejail"
+        elif not has_bwrap:
+            warnings.append("bubblewrap is unavailable; firejail fallback will be used")
+            install_hint = "install bubblewrap for the preferred Linux sandbox backend"
+    else:
+        errors.append(f"sandbox is not supported on platform {system or 'unknown'}")
+        install_hint = "use macOS sandbox-exec or Linux bubblewrap/firejail"
+
+    return {
+        "platform": system,
+        "available_backends": {k: v for k, v in backends.items() if k != "platform"},
+        "errors": errors,
+        "warnings": warnings,
+        "install_hint": install_hint,
+    }
+
+
 def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
     """Return a user/tool friendly sandbox readiness report."""
 
@@ -514,9 +614,13 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
         except OSError:
             pass
     backends = available_backends()
+    dependencies = sandbox_dependency_report()
     warnings: List[str] = []
     if settings["enabled"] and not plan.sandboxed:
         warnings.append(plan.reason or "sandbox requested but no backend is available")
+    if settings["enabled"]:
+        warnings.extend(dependencies.get("errors") or [])
+        warnings.extend(dependencies.get("warnings") or [])
     if not settings["enabled"]:
         warnings.append("sandbox is disabled; operation permissions still run before Bash/Python")
     return {
@@ -529,6 +633,7 @@ def sandbox_status(*, cwd: Optional[str] = None) -> Dict[str, Any]:
         "selected_backend": plan.backend,
         "sandboxed": plan.sandboxed,
         "reason": plan.reason,
+        "dependencies": dependencies,
         "filesystem": {
             "allow_read": allow_read,
             "allow_write": allow_write,

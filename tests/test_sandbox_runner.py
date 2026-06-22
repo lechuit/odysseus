@@ -255,6 +255,68 @@ def test_bubblewrap_plan_can_allow_network_for_approved_operation(monkeypatch, t
     assert "--unshare-net" not in list(plan.command)
 
 
+def test_bubblewrap_plan_creates_parent_dirs_for_outside_mounts(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    workspace_parent = tmp_path / "home" / "user"
+    ws = workspace_parent / "project"
+    outside = tmp_path / "shared" / "secret.txt"
+    write_dir = tmp_path / "exports"
+    ws.mkdir(parents=True)
+    outside.parent.mkdir()
+    outside.write_text("secret", encoding="utf-8")
+    write_dir.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "network": {"deny": False}})
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(
+        ("echo", "hi"),
+        str(ws),
+        extra_allow_read=[str(outside)],
+        extra_allow_write=[str(write_dir)],
+    )
+
+    assert plan is not None
+    command = list(plan.command)
+    assert _has_arg_pair(command, "--dir", str(workspace_parent))
+    assert _has_arg_pair(command, "--dir", str(outside.parent))
+    assert _has_arg_pair(command, "--bind", str(ws))
+    assert _has_arg_pair(command, "--ro-bind", str(outside))
+    assert _has_arg_pair(command, "--bind", str(write_dir))
+
+
+def test_firejail_plan_honors_approved_read_write_overrides(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    write_dir = tmp_path / "write"
+    write_dir.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "network": {"deny": True}})
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/firejail" if name == "firejail" else None)
+
+    plan = sandbox_runner._linux_firejail_plan(
+        ("echo", "hi"),
+        str(ws),
+        extra_allow_read=[str(outside)],
+        extra_allow_write=[str(write_dir)],
+    )
+
+    assert plan is not None
+    command = list(plan.command)
+    assert "--net=none" in command
+    assert f"--private={ws}" in command
+    assert f"--whitelist={outside}" in command
+    assert f"--whitelist={write_dir}" in command
+    assert f"--read-write={write_dir}" in command
+
+
+def _has_arg_pair(command, option, value):
+    return any(command[i : i + 2] == [option, value] for i in range(len(command) - 1))
+
+
 def test_sandbox_status_reports_disabled(monkeypatch, tmp_path):
     from src import sandbox_runner
 
@@ -277,3 +339,18 @@ def test_sandbox_status_warns_when_enabled_without_backend(monkeypatch, tmp_path
     assert status["enabled"] is True
     assert status["sandboxed"] is False
     assert "running unsandboxed" in status["warnings"][0]
+
+
+def test_sandbox_status_includes_linux_dependency_report(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "fail_if_unavailable": False})
+    monkeypatch.setattr(sandbox_runner.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda _name: None)
+
+    status = sandbox_runner.sandbox_status(cwd=str(tmp_path))
+
+    assert status["dependencies"]["platform"] == "linux"
+    assert "Linux sandbox requires bubblewrap or firejail" in status["dependencies"]["errors"]
+    assert "apt install bubblewrap firejail" in status["dependencies"]["install_hint"]
+    assert any("bubblewrap or firejail" in warning for warning in status["warnings"])
