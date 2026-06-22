@@ -121,3 +121,10 @@ python scripts/sandbox_self_test.py --preset strict_local --pretty --fail-on-fai
 ```
 
 Then it runs the focused sandbox tests. A passing `Ubuntu runtime enforcement` job is the strongest automated evidence that the Linux backend is not just present, but enforcing filesystem boundaries.
+
+Verified run:
+
+- Date: 2026-06-22
+- URL: https://github.com/lechuit/odysseus/actions/runs/27937169166
+- Head: `8005f58`
+- Result: passed on Ubuntu with `firejail` fallback after the runner rejected `bubblewrap` user namespace setup.

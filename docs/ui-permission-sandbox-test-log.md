@@ -404,3 +404,35 @@ No pending macOS UI checks remain from this sandbox batch.
     - `Suppressing memory/RAG/skills for explicit single-tool turn: ['manage_settings']`
     - round 1: `tools_sent=1 tool_names=['manage_settings']`
     - round 2: `tools_sent=0 tool_names=[]`
+
+## Linux sandbox CI runtime enforcement
+
+- Date: 2026-06-22
+- Workflow:
+  - `Linux sandbox self-test`
+  - Run: https://github.com/lechuit/odysseus/actions/runs/27937169166
+  - Head: `8005f58`
+  - Job: `Ubuntu runtime enforcement`
+- Result:
+  - success.
+  - `Report sandbox readiness`: passed.
+  - `Run sandbox enforcement self-test`: passed.
+  - `Run focused Linux sandbox tests`: passed.
+- Linux runtime evidence:
+  - GitHub-hosted Ubuntu had both `bubblewrap` and `firejail` installed.
+  - `bubblewrap` was present but failed its runtime probe with `bwrap: setting up uid map: Permission denied`.
+  - Odysseus correctly skipped unrunnable `bubblewrap` and selected `firejail`.
+  - `sandbox_self_test` passed all five checks under `firejail`:
+    - workspace write allowed;
+    - outside write denied;
+    - protected `.env` read denied/no leak;
+    - approved outside write allowed;
+    - approved exact protected read allowed.
+- Fixes discovered by the real Linux run and merged to `main`:
+  - `93397c0`: avoid invalid `firejail` `/tmp` whitelist.
+  - `254ec66`: preserve absolute paths by avoiding `--private=<workspace>`.
+  - `d4f7e93`: use a read-only parent boundary plus explicit workspace/approval read-write openings.
+  - `8dc67cc`: allow exact read approvals by omitting the exact `firejail` blacklist for that reviewed path only.
+  - `8005f58`: install the focused CI test dependencies.
+- Local validation paired with the Linux run:
+  - `tests/test_sandbox_runner.py tests/test_sandbox_self_test_cli.py`: 41 passed, 3 skipped on macOS.
