@@ -108,6 +108,28 @@ Local install: `/Users/gabrielpena/Library/Application Support/Odysseus`
   - `[operation-permissions] OPERATION PERMISSION RESUME`
   - `The user denied the pending operation permission.`
 
+### Git cwd guardrail and literal-argument preservation
+
+- First marker: `UI_GIT_CD_GUARD_240622`
+- Prompt: requested literal Bash command `cd /Users/gabrielpena/Desktop/Personal/odysseus && git status`.
+- Expected: the new Git+cwd guardrail should ask before running the command.
+- Observed before literal-argument fix:
+  - approval card appeared with reason `compound command changes directory before running git`;
+  - the model mistyped the copied command as `/Users/gabielpena/...`;
+  - this proved that strict single-tool mode limited schemas but still trusted the model to transcribe arguments.
+- Fix:
+  - literal Bash prompts with a high-confidence `comando literal exacto:` shape now extract the command from the user message;
+  - strict tool turns override model-produced Bash args with that extracted command.
+- Follow-up marker: `UI_GIT_CD_GUARD_LITERAL_542ACE5`
+- Result after fix:
+  - approval card still appeared with reason `compound command changes directory before running git`;
+  - the card and denial message preserved the exact command with `/Users/gabrielpena/...`;
+  - user action was `Denegar`;
+  - no `git status` output leaked.
+- Server log confirmation:
+  - before fix: `Denied operation: bash: cd /Users/gabielpena/Desktop/Personal/odysseus && git status`
+  - after fix: `Denied operation: bash: cd /Users/gabrielpena/Desktop/Personal/odysseus && git status`
+
 ## Important UI testing note
 
 The in-app textarea did not submit reliably with `Enter` during these tests. For future UI automation, after typing the prompt, click the visible send button.
@@ -151,3 +173,4 @@ These should be run after the sandbox runner changes are installed locally and t
   - compound Bash commands that change directory and then run Git now require approval;
   - compound Bash commands that change directory before another command now require review;
   - Git control paths are extracted and passed through the existing workspace/protected-path checks.
+  - strict literal Bash turns preserve extracted command arguments instead of trusting model transcription.
