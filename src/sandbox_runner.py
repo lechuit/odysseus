@@ -782,22 +782,24 @@ def _linux_firejail_plan(
     # reflect the same precedence contract as macOS and bubblewrap.
     extra_read = _unique_real([*_filesystem_setting_paths("allow_read"), *_extra_paths(extra_allow_read)])
     extra_write = _extra_paths(extra_allow_write)
-    private = cwd
-    args_list = [firejail, "--quiet", f"--private={private}", "--noprofile"]
+    # Use a private home and explicitly whitelist the active workspace instead
+    # of ``--private=<cwd>``.  The latter remaps the workspace to $HOME and
+    # makes the original absolute path disappear, which breaks normal tool
+    # commands and operation-scoped approved absolute paths.
+    args_list = [firejail, "--quiet", "--private", "--noprofile"]
     if _network_denied() and not extra_allow_network:
         args_list.append("--net=none")
     writable = set(allow_write)
     for path in allow_read:
         if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
             continue
-        if os.path.exists(path) and path != private:
+        if os.path.exists(path):
             args_list.append(f"--whitelist={path}")
     for path in allow_write:
         if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
             continue
         if os.path.exists(path):
-            if path != private:
-                args_list.append(f"--whitelist={path}")
+            args_list.append(f"--whitelist={path}")
             args_list.append(f"--read-write={path}")
     for path in deny_read:
         if os.path.exists(path):
@@ -808,14 +810,13 @@ def _linux_firejail_plan(
     for path in extra_read:
         if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
             continue
-        if os.path.exists(path) and path != private:
+        if os.path.exists(path):
             args_list.append(f"--whitelist={path}")
     for path in extra_write:
         if path in _FIREJAIL_IMPLICIT_RUNTIME_PATHS:
             continue
         if os.path.exists(path):
-            if path != private:
-                args_list.append(f"--whitelist={path}")
+            args_list.append(f"--whitelist={path}")
             args_list.append(f"--read-write={path}")
     args = (*args_list, "--", *command)
     return SandboxPlan(enabled=True, backend="firejail", command=args, sandboxed=True)
