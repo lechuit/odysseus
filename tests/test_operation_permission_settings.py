@@ -121,3 +121,40 @@ def test_manage_settings_sandbox_status(tmp_path, monkeypatch):
     assert result["sandbox"]["cwd"] == str(tmp_path)
     assert result["sandbox"]["enabled"] is False
     assert "Sandbox enabled=False" in result["response"]
+
+
+def test_manage_settings_list_and_clear_session_permission_rules(tmp_path, monkeypatch):
+    import src.settings as settings
+    from src import operation_permissions as op
+    from src.tool_implementations import do_manage_settings
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "SETTINGS_FILE", str(settings_path))
+    settings._invalidate_caches()
+
+    sid = "session-permission-settings"
+    op.clear_session_rules(sid)
+    op.add_session_rule(
+        sid,
+        {"behavior": "allow", "tool": "bash", "match": "exact", "pattern": "git status"},
+    )
+    op.add_session_rule(
+        sid,
+        {"behavior": "allow", "tool": "bash", "match": "exact", "pattern": "pwd"},
+        once=True,
+    )
+
+    listed = asyncio.run(do_manage_settings(json.dumps({
+        "action": "list_session_permission_rules",
+        "session_id": sid,
+    })))
+    assert listed["exit_code"] == 0
+    assert listed["session_permissions"]["counts"] == {"session": 1, "one_shot": 1, "pending": 0}
+
+    cleared = asyncio.run(do_manage_settings(json.dumps({
+        "action": "clear_session_permission_rules",
+        "session_id": sid,
+    })))
+    assert cleared["exit_code"] == 0
+    assert cleared["cleared"] == {"session": 1, "one_shot": 1, "pending": 0}
+    assert op.session_rules_snapshot(sid)["counts"] == {"session": 0, "one_shot": 0, "pending": 0}

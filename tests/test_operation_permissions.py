@@ -400,6 +400,74 @@ def test_builtin_bash_policy_asks_for_mutation(monkeypatch):
     assert "shell interpreter" in shell_pipeline.reason
 
 
+def test_path_policy_asks_for_sensitive_read(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.tool_execution import _active_workspace
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    token = _active_workspace.set(str(workspace))
+    try:
+        monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+        monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+        monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+
+        decision = op.evaluate_tool_permission("read_file", ".env", session_id="s-sensitive-file")
+    finally:
+        _active_workspace.reset(token)
+
+    assert decision.behavior == "ask"
+    assert "sensitive" in decision.reason
+
+
+def test_network_sandbox_policy_asks_and_sets_bash_override(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-network-bash"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "sandbox_settings", lambda: {"enabled": True, "network": {"deny": True}})
+
+    decision = op.evaluate_tool_permission("bash", "curl https://example.com", session_id=sid)
+    assert decision.behavior == "ask"
+    assert "network.deny" in decision.reason
+    op.register_pending_approval(sid, decision)
+    consumed = op.consume_pending_permission_response(sid, "Permitir una vez")
+    assert consumed["decision"] == "allow_once"
+
+    allowed = op.evaluate_tool_permission("bash", "curl https://example.com", session_id=sid)
+    assert allowed.behavior == "allow"
+    overrides = op.sandbox_overrides_for_operation(allowed.operation)
+    assert overrides["allow_network"] is True
+
+
+def test_network_sandbox_policy_asks_and_sets_python_override(monkeypatch):
+    from src import operation_permissions as op
+
+    sid = "perm-network-python"
+    op.clear_session_rules(sid)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
+    monkeypatch.setattr(op, "sandbox_settings", lambda: {"enabled": True, "network": {"deny": True}})
+
+    code = "import urllib.request\nprint(urllib.request.urlopen('https://example.com').status)"
+    decision = op.evaluate_tool_permission("python", code, session_id=sid)
+    assert decision.behavior == "ask"
+    assert "network.deny" in decision.reason
+    op.register_pending_approval(sid, decision)
+    assert op.consume_pending_permission_response(sid, "Permitir esta sesión")["decision"] == "allow_session"
+
+    allowed = op.evaluate_tool_permission("python", code, session_id=sid)
+    assert allowed.behavior == "allow"
+    assert allowed.rule["match"] == "exact"
+    overrides = op.sandbox_overrides_for_operation(allowed.operation)
+    assert overrides["allow_network"] is True
+
+
 def test_pending_permission_response_adds_one_shot_rule(monkeypatch):
     from src import operation_permissions as op
 
@@ -481,39 +549,48 @@ def test_permission_resume_note_for_read_file_requires_exact_replay(monkeypatch)
     assert "FIRST action in this turn MUST be to invoke the approved tool again" in note
 
 
-def test_protected_project_paths_ask_for_read_and_write(monkeypatch):
+def test_protected_project_paths_ask_for_read_and_write(monkeypatch, tmp_path):
     from src import operation_permissions as op
+    from src.tool_execution import _active_workspace
 
     sid = "perm-protected-path-read"
     op.clear_session_rules(sid)
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "src").mkdir()
+    (workspace / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    token = _active_workspace.set(str(workspace))
     monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
     monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
     monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
 
-    normal_read = op.evaluate_tool_permission("read_file", "src/app.py", session_id=sid)
-    assert normal_read.behavior == "passthrough"
+    try:
+        normal_read = op.evaluate_tool_permission("read_file", "src/app.py", session_id=sid)
+        assert normal_read.behavior == "passthrough"
 
-    protected_read = op.evaluate_tool_permission("read_file", ".git/config", session_id=sid)
-    assert protected_read.behavior == "ask"
-    assert "protected project/control directory" in protected_read.reason
+        protected_read = op.evaluate_tool_permission("read_file", ".git/config", session_id=sid)
+        assert protected_read.behavior == "ask"
+        assert "protected project/control directory" in protected_read.reason
 
-    protected_write = op.evaluate_tool_permission(
-        "edit_file",
-        json.dumps({"path": ".git/config", "old": "x", "new": "y"}),
-        session_id=sid,
-    )
-    assert protected_write.behavior == "ask"
+        protected_write = op.evaluate_tool_permission(
+            "edit_file",
+            json.dumps({"path": ".git/config", "old": "x", "new": "y"}),
+            session_id=sid,
+        )
+        assert protected_write.behavior == "ask"
 
-    mixed_case = op.evaluate_tool_permission("read_file", ".GIT/config", session_id=sid)
-    assert mixed_case.behavior == "ask"
+        mixed_case = op.evaluate_tool_permission("read_file", ".GIT/config", session_id=sid)
+        assert mixed_case.behavior == "ask"
 
-    workflow = op.evaluate_tool_permission(
-        "write_file",
-        ".Github/workflows/ci.yml\nname: ci",
-        session_id=sid,
-    )
-    assert workflow.behavior == "ask"
-    assert "configuration/workflow" in workflow.reason
+        workflow = op.evaluate_tool_permission(
+            "write_file",
+            ".Github/workflows/ci.yml\nname: ci",
+            session_id=sid,
+        )
+        assert workflow.behavior == "ask"
+        assert "configuration/workflow" in workflow.reason
+    finally:
+        _active_workspace.reset(token)
 
 
 def test_allowing_protected_write_does_not_allow_protected_read(monkeypatch):
@@ -597,6 +674,27 @@ def test_bash_sandbox_overrides_resolve_approved_paths(monkeypatch, tmp_path):
     assert not any("dynamic" in path for path in overrides["allow_read"])
 
 
+def test_file_sandbox_overrides_resolve_approved_path(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.tool_execution import _active_workspace
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside-ok", encoding="utf-8")
+    token = _active_workspace.set(str(workspace))
+    try:
+        overrides = op.sandbox_overrides_for_operation(
+            op.Operation(tool="read_file", content=str(outside), value=str(outside), kind="path", path=str(outside))
+        )
+    finally:
+        _active_workspace.reset(token)
+
+    assert os.path.realpath(outside) in overrides["allow_read"]
+    assert overrides["allow_write"] == []
+    assert overrides["allow_network"] is False
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_block_denies_explicit_rule(monkeypatch):
     from src import operation_permissions as op
@@ -676,11 +774,12 @@ async def test_execute_tool_block_passes_approved_bash_paths_to_sandbox(monkeypa
     command = "cat ../outside.txt"
     captured = {}
 
-    def fake_build_sandbox_plan(cmd, *, cwd, extra_allow_read=None, extra_allow_write=None):
+    def fake_build_sandbox_plan(cmd, *, cwd, extra_allow_read=None, extra_allow_write=None, extra_allow_network=False):
         captured["command"] = cmd
         captured["cwd"] = cwd
         captured["extra_allow_read"] = list(extra_allow_read or [])
         captured["extra_allow_write"] = list(extra_allow_write or [])
+        captured["extra_allow_network"] = extra_allow_network
         return SandboxPlan(enabled=False, command=tuple(cmd), reason="test", sandboxed=False)
 
     monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
@@ -704,16 +803,19 @@ async def test_execute_tool_block_passes_approved_bash_paths_to_sandbox(monkeypa
     assert result["output"] == "outside-ok"
     assert os.path.realpath(outside) in captured["extra_allow_read"]
     assert captured["extra_allow_write"] == []
+    assert captured["extra_allow_network"] is False
 
 
 @pytest.mark.asyncio
-async def test_workspace_blocks_absolute_file_path_before_permission(monkeypatch, tmp_path):
+async def test_workspace_outside_file_path_prompts_for_permission(monkeypatch, tmp_path):
     from src import operation_permissions as op
     from src.agent_tools import ToolBlock
     from src.tool_execution import execute_tool_block
 
     workspace = tmp_path / "project"
     workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
 
     monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
     monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
@@ -722,26 +824,29 @@ async def test_workspace_blocks_absolute_file_path_before_permission(monkeypatch
     monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
 
     desc, result = await execute_tool_block(
-        ToolBlock("edit_file", json.dumps({"path": "/home/gabriel/.git/config", "old": "x", "new": "y"})),
+        ToolBlock("read_file", str(outside)),
         owner="admin",
         session_id="s-workspace-preflight",
         workspace=str(workspace),
     )
 
-    assert desc == "edit_file: BLOCKED"
-    assert result["blocked"] is True
-    assert "outside the workspace" in result["error"]
-    assert "ask_user" not in result
+    assert desc == "read_file: permission required"
+    assert result["exit_code"] == 0
+    assert result["ask_user"]["permission_request"] is True
+    assert "outside the workspace" in result["ask_user"]["question"]
+    assert "ask_user" in result
 
 
 @pytest.mark.asyncio
-async def test_workspace_blocks_search_path_before_permission(monkeypatch, tmp_path):
+async def test_workspace_outside_search_path_prompts_for_permission(monkeypatch, tmp_path):
     from src import operation_permissions as op
     from src.agent_tools import ToolBlock
     from src.tool_execution import execute_tool_block
 
     workspace = tmp_path / "project"
     workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
 
     monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
     monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
@@ -750,13 +855,75 @@ async def test_workspace_blocks_search_path_before_permission(monkeypatch, tmp_p
     monkeypatch.setattr(op, "get_persistent_rules", lambda: [])
 
     desc, result = await execute_tool_block(
-        ToolBlock("grep", json.dumps({"pattern": "x", "path": "/home/gabriel/.git"})),
+        ToolBlock("grep", json.dumps({"pattern": "x", "path": str(outside)})),
         owner="admin",
         session_id="s-workspace-search-preflight",
         workspace=str(workspace),
     )
 
-    assert desc == "grep: BLOCKED"
-    assert result["blocked"] is True
-    assert "outside the workspace" in result["error"]
-    assert "ask_user" not in result
+    assert desc == "grep: permission required"
+    assert result["exit_code"] == 0
+    assert result["ask_user"]["permission_request"] is True
+    assert "outside the workspace" in result["ask_user"]["question"]
+    assert "ask_user" in result
+
+
+@pytest.mark.asyncio
+async def test_approved_read_file_outside_workspace_replays_successfully(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.agent_tools import ToolBlock
+    from src.tool_execution import execute_tool_block
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside-ok", encoding="utf-8")
+
+    monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
+    monkeypatch.setattr("src.tool_execution.get_mcp_manager", lambda: None)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "allow", "tool": "read_file", "match": "path", "pattern": str(outside)})
+    ])
+
+    desc, result = await execute_tool_block(
+        ToolBlock("read_file", str(outside)),
+        owner="admin",
+        session_id="s-approved-read-outside",
+        workspace=str(workspace),
+    )
+
+    assert desc.startswith("read_file:")
+    assert result["exit_code"] == 0
+    assert result["output"] == "outside-ok"
+
+
+@pytest.mark.asyncio
+async def test_approved_write_file_outside_workspace_replays_successfully(monkeypatch, tmp_path):
+    from src import operation_permissions as op
+    from src.agent_tools import ToolBlock
+    from src.tool_execution import execute_tool_block
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    outside = tmp_path / "created-outside.txt"
+
+    monkeypatch.setattr("src.tool_execution.owner_is_admin_or_single_user", lambda owner: True)
+    monkeypatch.setattr("src.tool_execution.get_mcp_manager", lambda: None)
+    monkeypatch.setattr(op, "operation_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "builtin_permissions_enabled", lambda: True)
+    monkeypatch.setattr(op, "get_persistent_rules", lambda: [
+        op.normalize_rule({"behavior": "allow", "tool": "write_file", "match": "path", "pattern": str(outside)})
+    ])
+
+    desc, result = await execute_tool_block(
+        ToolBlock("write_file", f"{outside}\nhello outside"),
+        owner="admin",
+        session_id="s-approved-write-outside",
+        workspace=str(workspace),
+    )
+
+    assert desc.startswith("write_file:")
+    assert result["exit_code"] == 0
+    assert outside.read_text(encoding="utf-8") == "hello outside"

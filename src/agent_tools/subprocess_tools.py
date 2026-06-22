@@ -115,10 +115,12 @@ class BashTool:
             cwd=cwd,
             extra_allow_read=sandbox_allow.get("allow_read") or [],
             extra_allow_write=sandbox_allow.get("allow_write") or [],
+            extra_allow_network=bool(sandbox_allow.get("allow_network")),
         )
-        record_sandbox_run(sandboxed=plan.sandboxed)
         if sandbox_enabled() and fail_if_unavailable() and not plan.sandboxed:
+            record_sandbox_run(sandboxed=False, blocked=True)
             return {"error": f"bash: sandbox unavailable: {plan.reason}", "exit_code": 126}
+        record_sandbox_run(sandboxed=plan.sandboxed)
         profile_path = plan.reason if plan.backend == "sandbox-exec" else ""
         try:
             if plan.enabled:
@@ -174,10 +176,12 @@ class PythonTool:
             cwd=cwd,
             extra_allow_read=sandbox_allow.get("allow_read") or [],
             extra_allow_write=sandbox_allow.get("allow_write") or [],
+            extra_allow_network=bool(sandbox_allow.get("allow_network")),
         )
-        record_sandbox_run(sandboxed=plan.sandboxed)
         if sandbox_enabled() and fail_if_unavailable() and not plan.sandboxed:
+            record_sandbox_run(sandboxed=False, blocked=True)
             return {"error": f"python: sandbox unavailable: {plan.reason}", "exit_code": 126}
+        record_sandbox_run(sandboxed=plan.sandboxed)
         profile_path = plan.reason if plan.backend == "sandbox-exec" else ""
         try:
             proc = await asyncio.create_subprocess_exec(

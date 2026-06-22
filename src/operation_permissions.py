@@ -43,6 +43,7 @@ _METRICS: Dict[str, int] = {
     "approved": 0,
     "sandboxed": 0,
     "unsandboxed": 0,
+    "sandbox_blocked": 0,
 }
 
 
@@ -232,11 +233,66 @@ def clear_session_rules(session_id: str) -> None:
     _PENDING_APPROVALS.pop(str(session_id), None)
 
 
+def session_rules_snapshot(session_id: Optional[str]) -> Dict[str, Any]:
+    """Return transient permission state for a chat/session."""
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        return {
+            "session_id": "",
+            "session_rules": [],
+            "one_shot_rules": [],
+            "pending_approval": None,
+            "counts": {"session": 0, "one_shot": 0, "pending": 0},
+        }
+    pending = _PENDING_APPROVALS.get(sid)
+    pending_public = None
+    if isinstance(pending, Mapping):
+        op = pending.get("operation") or {}
+        pending_public = {
+            "operation": {
+                "tool": op.get("tool"),
+                "kind": op.get("kind"),
+                "description": op.get("description"),
+                "path": op.get("path"),
+                "domain": op.get("domain"),
+                "mcp_tool": op.get("mcp_tool"),
+            },
+            "reason": str(pending.get("reason") or ""),
+            "created_at": pending.get("created_at"),
+        }
+    session_rules = list(_SESSION_RULES.get(sid, []))
+    one_shot_rules = list(_ONE_SHOT_RULES.get(sid, []))
+    return {
+        "session_id": sid,
+        "session_rules": session_rules,
+        "one_shot_rules": one_shot_rules,
+        "pending_approval": pending_public,
+        "counts": {
+            "session": len(session_rules),
+            "one_shot": len(one_shot_rules),
+            "pending": 1 if pending_public else 0,
+        },
+    }
+
+
+def clear_session_permission_state(session_id: str) -> Dict[str, int]:
+    """Clear transient permission state and return how many entries were removed."""
+
+    sid = str(session_id or "").strip()
+    before = session_rules_snapshot(sid)
+    clear_session_rules(sid)
+    return dict(before.get("counts") or {})
+
+
 def metrics_snapshot() -> Dict[str, int]:
     return dict(_METRICS)
 
 
-def record_sandbox_run(*, sandboxed: bool) -> None:
+def record_sandbox_run(*, sandboxed: bool, blocked: bool = False) -> None:
+    if blocked:
+        _METRICS["sandbox_blocked"] += 1
+        return
     _METRICS["sandboxed" if sandboxed else "unsandboxed"] += 1
 
 
@@ -675,6 +731,24 @@ def _path_safety_decision(op: Operation) -> Optional[PermissionDecision]:
                 suggested_rule=_rule_for_operation(op, "allow"),
                 severity="high",
             )
+    try:
+        from src.tool_execution import _resolve_search_root, _resolve_tool_path
+
+        if op.tool in {"grep", "glob", "ls"}:
+            _resolve_search_root(path)
+        else:
+            _resolve_tool_path(path, for_write=op.tool in {"write_file", "edit_file"})
+    except ValueError as exc:
+        return PermissionDecision(
+            behavior="ask",
+            reason=f"{op.tool} targets a path blocked by filesystem/workspace policy: {exc}",
+            source="builtin",
+            operation=op,
+            suggested_rule=_rule_for_operation(op, "allow"),
+            severity="high" if op.tool in {"write_file", "edit_file"} else "normal",
+        )
+    except Exception:
+        logger.debug("Path safety policy could not resolve %s path", op.tool, exc_info=True)
     return None
 
 
@@ -747,6 +821,36 @@ _BASH_DANGEROUS_COMMANDS = {
     "osascript",
     "security",
 }
+_BASH_NETWORK_COMMANDS = {
+    "curl",
+    "wget",
+    "nc",
+    "netcat",
+    "ncat",
+    "telnet",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "ping",
+    "dig",
+    "host",
+    "nslookup",
+    "ftp",
+    "lftp",
+    "http",
+    "https",
+    "httpie",
+    "openssl",
+}
+_PYTHON_NETWORK_RE = re.compile(
+    r"(?x)"
+    r"(^|\n)\s*(?:import|from)\s+"
+    r"(?:socket|requests|urllib|httpx|aiohttp|ftplib|smtplib|imaplib|poplib|paramiko|websocket|telnetlib|ssl|http)\b"
+    r"|"
+    r"\b(?:socket\.|requests\.|urllib\.request|httpx\.|aiohttp\.|ftplib\.|smtplib\.|imaplib\.|poplib\.|"
+    r"websocket\.|asyncio\.open_connection|open_connection\()"
+)
 _SHELL_INTERPRETERS = {
     "sh",
     "bash",
@@ -943,6 +1047,30 @@ def _parts_for_bash_path_analysis(segment: str) -> Tuple[str, List[str]]:
     parts = _strip_redirection_tokens(parts)
     token = os.path.basename(parts[0]) if parts else ""
     return token, parts
+
+
+def _bash_uses_network(command: str) -> bool:
+    segments = _split_shell_segments(command or "")
+    if len(segments) > _MAX_BASH_SEGMENTS_FOR_PERMISSION:
+        return False
+    for segment in segments:
+        base, _parts = _parts_for_bash_path_analysis(segment)
+        if base in _BASH_NETWORK_COMMANDS:
+            return True
+    return False
+
+
+def _python_uses_network(code: str) -> bool:
+    return bool(_PYTHON_NETWORK_RE.search(code or ""))
+
+
+def _sandbox_network_denied() -> bool:
+    try:
+        from src.sandbox_runner import normalize_sandbox_settings
+
+        return bool(normalize_sandbox_settings(sandbox_settings())["network"]["deny"])
+    except Exception:
+        return False
 
 
 def _filter_bash_path_args(args: List[str]) -> List[str]:
@@ -1207,33 +1335,68 @@ def _sandbox_write_allow_path(resolved_path: str) -> str:
     return os.path.dirname(path) or path
 
 
-def sandbox_overrides_for_operation(operation: Mapping[str, Any] | Operation | None) -> Dict[str, List[str]]:
-    """Return per-operation sandbox read/write allowances.
+def sandbox_overrides_for_operation(operation: Mapping[str, Any] | Operation | None) -> Dict[str, Any]:
+    """Return per-operation sandbox/filesystem allowances.
 
     These are used only after the operation-permission layer has returned an
     explicit allow rule (for example after the user clicked "allow once").
     They are not persisted and are intentionally narrow to paths that can be
-    resolved before executing the shell.
+    resolved before executing the tool.
     """
 
     if isinstance(operation, Operation):
         tool = operation.tool
         command = operation.command or operation.content or ""
+        path_value = operation.path or operation.value or ""
     elif isinstance(operation, Mapping):
         tool = str(operation.get("tool") or "")
         command = str(operation.get("command") or operation.get("content") or "")
+        path_value = str(operation.get("path") or operation.get("value") or "")
     else:
         tool = ""
         command = ""
+        path_value = ""
 
     allow_read: List[str] = []
     allow_write: List[str] = []
-    if _norm_tool(tool) != "bash" or not command:
-        return {"allow_read": allow_read, "allow_write": allow_write}
+    allow_network = False
+    tool = _norm_tool(tool)
+
+    if tool in {"read_file", "grep", "glob", "ls"} and path_value:
+        try:
+            from src.tool_execution import _candidate_tool_path_for_permission
+
+            allow_read.append(_candidate_tool_path_for_permission(path_value, for_write=False))
+        except Exception:
+            pass
+    elif tool in {"write_file", "edit_file"} and path_value:
+        try:
+            from src.tool_execution import _candidate_tool_path_for_permission
+
+            allow_write.append(_candidate_tool_path_for_permission(path_value, for_write=True))
+        except Exception:
+            pass
+
+    if tool == "python":
+        allow_network = _sandbox_network_denied() and _python_uses_network(command)
+        return {
+            "allow_read": list(dict.fromkeys(path for path in allow_read if path)),
+            "allow_write": list(dict.fromkeys(path for path in allow_write if path)),
+            "allow_network": allow_network,
+        }
+
+    if tool != "bash" or not command:
+        return {
+            "allow_read": list(dict.fromkeys(path for path in allow_read if path)),
+            "allow_write": list(dict.fromkeys(path for path in allow_write if path)),
+            "allow_network": allow_network,
+        }
+
+    allow_network = _sandbox_network_denied() and _bash_uses_network(command)
 
     segments = _split_shell_segments(command)
     if len(segments) > _MAX_BASH_SEGMENTS_FOR_PERMISSION:
-        return {"allow_read": allow_read, "allow_write": allow_write}
+        return {"allow_read": allow_read, "allow_write": allow_write, "allow_network": allow_network}
 
     for segment in segments:
         for raw_path, access in _bash_paths_for_segment(segment):
@@ -1246,6 +1409,7 @@ def sandbox_overrides_for_operation(operation: Mapping[str, Any] | Operation | N
     return {
         "allow_read": list(dict.fromkeys(path for path in allow_read if path)),
         "allow_write": list(dict.fromkeys(path for path in allow_write if path)),
+        "allow_network": allow_network,
     }
 
 
@@ -1487,10 +1651,35 @@ def _bash_policy_decision(op: Operation) -> Optional[PermissionDecision]:
     return None
 
 
+def _network_sandbox_decision(op: Operation) -> Optional[PermissionDecision]:
+    if not _sandbox_network_denied():
+        return None
+    uses_network = False
+    if op.tool == "bash":
+        uses_network = _bash_uses_network(op.command or op.content)
+    elif op.tool == "python":
+        uses_network = _python_uses_network(op.command or op.content)
+    if not uses_network:
+        return None
+    return PermissionDecision(
+        behavior="ask",
+        reason=f"{op.tool} may use network access while sandbox network.deny is enabled",
+        source="builtin",
+        operation=op,
+        suggested_rule=_rule_for_operation(op, "allow"),
+        severity="normal",
+    )
+
+
 def _builtin_decision(op: Operation) -> Optional[PermissionDecision]:
     if not builtin_permissions_enabled():
         return None
-    return _path_safety_decision(op) or _bash_path_safety_decision(op) or _bash_policy_decision(op)
+    return (
+        _path_safety_decision(op)
+        or _bash_path_safety_decision(op)
+        or _bash_policy_decision(op)
+        or _network_sandbox_decision(op)
+    )
 
 
 def _rule_for_operation(op: Operation, behavior: str) -> Dict[str, Any]:
@@ -1502,6 +1691,17 @@ def _rule_for_operation(op: Operation, behavior: str) -> Dict[str, Any]:
                 "match": "exact",
                 "pattern": op.command,
                 "description": f"User-approved Bash command: {op.command[:120]}",
+            },
+            scope="session",
+        )
+    if op.tool == "python":
+        return normalize_rule(
+            {
+                "behavior": behavior,
+                "tool": "python",
+                "match": "exact",
+                "pattern": op.command,
+                "description": f"User-approved Python code: {op.command[:120]}",
             },
             scope="session",
         )

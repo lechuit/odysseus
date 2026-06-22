@@ -1173,14 +1173,18 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             "delete_permission_rule",
             "list_permission_rules",
             "clear_permission_rules",
+            "list_session_permission_rules",
+            "clear_session_permission_rules",
             "permission_metrics",
         ):
             from src.operation_permissions import (
                 add_persistent_rule,
+                clear_session_permission_state,
                 clear_persistent_rules,
                 delete_persistent_rule,
                 get_persistent_rules,
                 metrics_snapshot,
+                session_rules_snapshot,
             )
 
             if action == "list_permission_rules":
@@ -1204,6 +1208,37 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                 return {
                     "response": ", ".join(f"{k}={v}" for k, v in sorted(metrics.items())),
                     "metrics": metrics,
+                    "exit_code": 0,
+                }
+
+            if action == "list_session_permission_rules":
+                sid = str(args.get("session_id") or args.get("session") or "").strip()
+                if not sid:
+                    return {"error": "session_id is required", "exit_code": 1}
+                snapshot = session_rules_snapshot(sid)
+                counts = snapshot.get("counts") or {}
+                return {
+                    "response": (
+                        f"Session {sid}: session={counts.get('session', 0)}, "
+                        f"one_shot={counts.get('one_shot', 0)}, pending={counts.get('pending', 0)}."
+                    ),
+                    "session_permissions": snapshot,
+                    "exit_code": 0,
+                }
+
+            if action == "clear_session_permission_rules":
+                sid = str(args.get("session_id") or args.get("session") or "").strip()
+                if not sid:
+                    return {"error": "session_id is required", "exit_code": 1}
+                cleared = clear_session_permission_state(sid)
+                return {
+                    "response": (
+                        f"Cleared session permission state for {sid}: "
+                        f"session={cleared.get('session', 0)}, "
+                        f"one_shot={cleared.get('one_shot', 0)}, "
+                        f"pending={cleared.get('pending', 0)}."
+                    ),
+                    "cleared": cleared,
                     "exit_code": 0,
                 }
 

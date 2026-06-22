@@ -87,6 +87,23 @@ def test_macos_profile_contains_workspace_and_denies_sensitive(monkeypatch, tmp_
     assert "network-outbound" not in profile
 
 
+def test_macos_profile_can_allow_network_for_approved_operation(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {
+        "enabled": True,
+        "filesystem": {"allow_read": [], "allow_write": [], "deny": []},
+        "network": {"deny": True},
+    })
+
+    profile = sandbox_runner._macos_sandbox_profile(str(ws), extra_allow_network=True)
+
+    assert "(allow network-outbound)" in profile
+    assert "(allow network-bind)" in profile
+
+
 def test_macos_profile_appends_operation_allowances_after_denies(monkeypatch, tmp_path):
     from src import sandbox_runner
 
@@ -189,6 +206,20 @@ def test_bubblewrap_plan_overlays_write_denies(monkeypatch, tmp_path):
     git_index = command.index(str(ws / ".git"))
     assert command[git_index - 1] == "--ro-bind"
     assert any(command[i : i + 3] == ["--ro-bind", "/dev/null", str(ws / ".env")] for i in range(len(command) - 2))
+
+
+def test_bubblewrap_plan_can_allow_network_for_approved_operation(monkeypatch, tmp_path):
+    from src import sandbox_runner
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(sandbox_runner, "_settings", lambda: {"enabled": True, "network": {"deny": True}})
+    monkeypatch.setattr(sandbox_runner.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+    plan = sandbox_runner._linux_bwrap_plan(("echo", "hi"), str(ws), extra_allow_network=True)
+
+    assert plan is not None
+    assert "--unshare-net" not in list(plan.command)
 
 
 def test_sandbox_status_reports_disabled(monkeypatch, tmp_path):

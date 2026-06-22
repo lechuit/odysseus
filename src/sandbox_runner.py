@@ -243,6 +243,7 @@ def _macos_sandbox_profile(
     *,
     extra_allow_read: Optional[Sequence[str]] = None,
     extra_allow_write: Optional[Sequence[str]] = None,
+    extra_allow_network: bool = False,
 ) -> str:
     allow_read, allow_write, deny_read, deny_write = _workspace_paths(cwd)
     extra_read = _extra_paths(extra_allow_read)
@@ -260,7 +261,7 @@ def _macos_sandbox_profile(
         # grants a narrow extra write allowance.
         "(allow file-read*)",
     ]
-    if not _network_denied():
+    if extra_allow_network or not _network_denied():
         lines.extend(["(allow network-outbound)", "(allow network-bind)"])
     for path in allow_write:
         lines.append(f"(allow file-write* (subpath {json.dumps(path)}))")
@@ -289,11 +290,17 @@ def _macos_plan(
     *,
     extra_allow_read: Optional[Sequence[str]] = None,
     extra_allow_write: Optional[Sequence[str]] = None,
+    extra_allow_network: bool = False,
 ) -> Optional[SandboxPlan]:
     sandbox_exec = shutil.which("sandbox-exec")
     if not sandbox_exec:
         return None
-    profile = _macos_sandbox_profile(cwd, extra_allow_read=extra_allow_read, extra_allow_write=extra_allow_write)
+    profile = _macos_sandbox_profile(
+        cwd,
+        extra_allow_read=extra_allow_read,
+        extra_allow_write=extra_allow_write,
+        extra_allow_network=extra_allow_network,
+    )
     fd, profile_path = tempfile.mkstemp(prefix="odysseus-sandbox-", suffix=".sb")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(profile)
@@ -307,6 +314,7 @@ def _linux_bwrap_plan(
     *,
     extra_allow_read: Optional[Sequence[str]] = None,
     extra_allow_write: Optional[Sequence[str]] = None,
+    extra_allow_network: bool = False,
 ) -> Optional[SandboxPlan]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
@@ -326,7 +334,7 @@ def _linux_bwrap_plan(
         "--ro-bind", "/etc", "/etc",
         "--tmpfs", "/tmp",
     ]
-    if _network_denied():
+    if _network_denied() and not extra_allow_network:
         args.insert(2, "--unshare-net")
     allow_write_set = set(allow_write)
     for path in allow_read:
@@ -358,6 +366,7 @@ def _linux_firejail_plan(
     *,
     extra_allow_read: Optional[Sequence[str]] = None,
     extra_allow_write: Optional[Sequence[str]] = None,
+    extra_allow_network: bool = False,
 ) -> Optional[SandboxPlan]:
     firejail = shutil.which("firejail")
     if not firejail:
@@ -366,7 +375,7 @@ def _linux_firejail_plan(
     allow_write = _unique_real([*allow_write, *_extra_paths(extra_allow_write)])
     private = allow_write[0] if allow_write else cwd
     args_list = [firejail, "--quiet", f"--private={private}", "--noprofile"]
-    if _network_denied():
+    if _network_denied() and not extra_allow_network:
         args_list.append("--net=none")
     for path in deny_read:
         if os.path.exists(path):
@@ -384,6 +393,7 @@ def build_sandbox_plan(
     cwd: str,
     extra_allow_read: Optional[Sequence[str]] = None,
     extra_allow_write: Optional[Sequence[str]] = None,
+    extra_allow_network: bool = False,
 ) -> SandboxPlan:
     if not sandbox_enabled():
         return SandboxPlan(enabled=False, command=tuple(command), reason="sandbox disabled", sandboxed=False)
@@ -397,6 +407,7 @@ def build_sandbox_plan(
                 cwd,
                 extra_allow_read=extra_allow_read,
                 extra_allow_write=extra_allow_write,
+                extra_allow_network=extra_allow_network,
             )
         elif system == "linux":
             plan = _linux_bwrap_plan(
@@ -404,11 +415,13 @@ def build_sandbox_plan(
                 cwd,
                 extra_allow_read=extra_allow_read,
                 extra_allow_write=extra_allow_write,
+                extra_allow_network=extra_allow_network,
             ) or _linux_firejail_plan(
                 command,
                 cwd,
                 extra_allow_read=extra_allow_read,
                 extra_allow_write=extra_allow_write,
+                extra_allow_network=extra_allow_network,
             )
     except Exception as exc:
         logger.warning("Failed to build sandbox plan: %s", exc)

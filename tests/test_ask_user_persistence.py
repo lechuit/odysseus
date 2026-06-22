@@ -107,3 +107,15 @@ def test_ask_user_options_expand_for_descriptions():
     assert "height: auto" in option_rule
     assert "min-height: 44px" in option_rule
     assert "flex-wrap: wrap" not in option_rule
+
+
+def test_permission_cards_hide_free_text_and_guard_double_clicks():
+    renderer = (ROOT / "static" / "js" / "chatRenderer.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert "const permissionRequest = !!aq.permission_request" in renderer
+    assert "ask-user-card-permission" in renderer
+    assert "let answered = false" in renderer
+    assert "if (!text || answered) return" in renderer
+    assert "if (!permissionRequest) {" in renderer
+    assert ".ask-user-card-permission {" in styles

@@ -1998,11 +1998,13 @@ export function renderAskUserCard(payload, options) {
   removeAskUserCards(chatBox);
 
   const card = document.createElement('div');
-  card.className = 'ask-user-card';
+  const permissionRequest = !!aq.permission_request;
+  card.className = permissionRequest ? 'ask-user-card ask-user-card-permission' : 'ask-user-card';
   card.setAttribute('role', 'group');
   card.tabIndex = -1;
   const multi = !!aq.multi;
   const emojiText = (value) => svgifyEmoji(uiModule.esc(String(value)));
+  let answered = false;
 
   const head = document.createElement('div');
   head.className = 'ask-user-head';
@@ -2031,7 +2033,9 @@ export function renderAskUserCard(payload, options) {
   card.appendChild(list);
 
   const send = (text) => {
-    if (!text) return;
+    if (!text || answered) return;
+    answered = true;
+    card.querySelectorAll('button,input').forEach((el) => { el.disabled = true; });
     card.remove();
     const input = uiModule.el('message');
     if (input) input.value = text;
@@ -2071,38 +2075,40 @@ export function renderAskUserCard(payload, options) {
     list.appendChild(row);
   });
 
-  const other = document.createElement('div');
-  other.className = 'ask-user-other';
-  const otherInput = document.createElement('input');
-  otherInput.type = 'text';
-  otherInput.className = 'styled-prompt-input ask-user-other-input';
-  otherInput.placeholder = multi ? 'Other (added to selection)…' : 'Other… (type your own answer)';
-  otherInput.setAttribute('aria-label', multi ? 'Add a custom option' : 'Type a custom answer');
-  const otherSend = document.createElement('button');
-  otherSend.type = 'button';
-  otherSend.className = 'confirm-btn confirm-btn-primary ask-user-other-send';
-  otherSend.setAttribute('aria-label', 'Send answer');
-  otherSend.textContent = multi ? 'Send selection' : 'Send';
-  const submit = () => {
-    const freeText = otherInput.value.trim();
-    if (multi) {
-      const picked = Array.from(card.querySelectorAll('.ask-user-option input:checked')).map((input) => input.value);
-      if (freeText) picked.push(freeText);
-      if (picked.length) send(picked.join(', '));
-    } else if (freeText) {
-      send(freeText);
-    }
-  };
-  otherSend.addEventListener('click', submit);
-  otherInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      submit();
-    }
-  });
-  other.appendChild(otherInput);
-  other.appendChild(otherSend);
-  card.appendChild(other);
+  if (!permissionRequest) {
+    const other = document.createElement('div');
+    other.className = 'ask-user-other';
+    const otherInput = document.createElement('input');
+    otherInput.type = 'text';
+    otherInput.className = 'styled-prompt-input ask-user-other-input';
+    otherInput.placeholder = multi ? 'Other (added to selection)…' : 'Other… (type your own answer)';
+    otherInput.setAttribute('aria-label', multi ? 'Add a custom option' : 'Type a custom answer');
+    const otherSend = document.createElement('button');
+    otherSend.type = 'button';
+    otherSend.className = 'confirm-btn confirm-btn-primary ask-user-other-send';
+    otherSend.setAttribute('aria-label', 'Send answer');
+    otherSend.textContent = multi ? 'Send selection' : 'Send';
+    const submit = () => {
+      const freeText = otherInput.value.trim();
+      if (multi) {
+        const picked = Array.from(card.querySelectorAll('.ask-user-option input:checked')).map((input) => input.value);
+        if (freeText) picked.push(freeText);
+        if (picked.length) send(picked.join(', '));
+      } else if (freeText) {
+        send(freeText);
+      }
+    };
+    otherSend.addEventListener('click', submit);
+    otherInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        submit();
+      }
+    });
+    other.appendChild(otherInput);
+    other.appendChild(otherSend);
+    card.appendChild(other);
+  }
 
   chatBox.appendChild(card);
   if (renderOptions.scroll !== false) {

@@ -205,12 +205,20 @@ def _resolve_tool_path(raw_path: str, *, for_write: bool = False) -> str:
     """
     ws = get_active_workspace()
     if ws:
-        return _resolve_tool_path_in_workspace(ws, raw_path, for_write=for_write)
+        try:
+            return _resolve_tool_path_in_workspace(ws, raw_path, for_write=for_write)
+        except ValueError:
+            approved = _candidate_tool_path_for_permission(raw_path, for_write=for_write)
+            if _approved_path_allowed(approved, for_write=for_write):
+                return approved
+            raise
     raw = _validate_model_path_syntax(raw_path, for_write=for_write)
     expanded = os.path.expanduser(raw)
     resolved = os.path.realpath(expanded)
 
     if _is_sensitive_path(resolved):
+        if _approved_path_allowed(resolved, for_write=for_write):
+            return resolved
         raise ValueError(
             f"path '{raw_path}' is inside a sensitive directory "
             f"(e.g. .ssh, .gnupg) or matches a sensitive filename"
@@ -225,6 +233,8 @@ def _resolve_tool_path(raw_path: str, *, for_write: bool = False) -> str:
             continue
         if common == root:
             return resolved
+    if _approved_path_allowed(resolved, for_write=for_write):
+        return resolved
     raise ValueError(
         f"path '{raw_path}' is outside the allowed roots"
     )
@@ -288,11 +298,56 @@ def _resolve_tool_path_in_workspace(workspace: str, raw_path: str, *, for_write:
 _active_workspace: contextvars.ContextVar = contextvars.ContextVar(
     "agent_active_workspace", default=None
 )
+_approved_tool_path_allowances: contextvars.ContextVar = contextvars.ContextVar(
+    "agent_approved_tool_path_allowances", default=None
+)
 
 
 def get_active_workspace() -> Optional[str]:
     """The folder the agent is confined to this turn, or None."""
     return _active_workspace.get()
+
+
+def _candidate_tool_path_for_permission(raw_path: str, *, for_write: bool = False) -> str:
+    """Resolve a model path to its host candidate without applying allowlists.
+
+    This is used only by the permission layer after the operation has been
+    reviewed.  Syntax validation still runs; containment/sensitive checks are
+    enforced by _resolve_tool_path unless the exact path has an approved
+    one-operation allowance.
+    """
+
+    raw = _validate_model_path_syntax(raw_path, for_write=for_write)
+    ws = get_active_workspace()
+    expanded = os.path.expanduser(raw)
+    candidate = expanded
+    if ws and not os.path.isabs(expanded):
+        candidate = os.path.join(os.path.realpath(ws), expanded)
+    return os.path.realpath(candidate)
+
+
+def _approved_path_allowed(resolved_path: str, *, for_write: bool = False) -> bool:
+    allowances = _approved_tool_path_allowances.get() or {}
+    if not isinstance(allowances, dict):
+        return False
+    paths = allowances.get("allow_write" if for_write else "allow_read") or []
+    try:
+        resolved = os.path.normcase(os.path.realpath(resolved_path))
+    except OSError:
+        return False
+    for raw in paths:
+        try:
+            allowed = os.path.normcase(os.path.realpath(str(raw)))
+        except OSError:
+            continue
+        if resolved == allowed:
+            return True
+        try:
+            if os.path.isdir(allowed) and os.path.commonpath([resolved, allowed]) == allowed:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _workspace_path_violation_before_permission(tool: str, content: str) -> Optional[str]:
@@ -560,7 +615,11 @@ async def _direct_fallback(
 
         from src.agent_tools import TOOL_HANDLERS
         if tool in TOOL_HANDLERS:
-            return await TOOL_HANDLERS[tool](content, ctx)
+            token = _approved_tool_path_allowances.set(sandbox_allow or {})
+            try:
+                return await TOOL_HANDLERS[tool](content, ctx)
+            finally:
+                _approved_tool_path_allowances.reset(token)
 
     except Exception as e:
         return {"error": f"{tool}: {e}", "exit_code": 1}
@@ -716,16 +775,6 @@ async def _execute_tool_block_impl(
     # command, file path, web_fetch domain, or MCP tool while leaving the tool
     # itself enabled.
     if tool not in {"ask_user", "update_plan"}:
-        workspace_violation = _workspace_path_violation_before_permission(tool, content)
-        if workspace_violation:
-            desc = f"{tool}: BLOCKED"
-            result = {"error": workspace_violation, "exit_code": 1, "blocked": True}
-            logger.warning(
-                "Workspace path blocked before permission check tool=%s error=%s",
-                tool,
-                workspace_violation,
-            )
-            return desc, result
         try:
             from src.operation_permissions import ask_result, deny_result, evaluate_tool_permission
 

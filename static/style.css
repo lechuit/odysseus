@@ -37473,6 +37473,10 @@ body.theme-frosted .modal {
 /* Focused only programmatically (tabIndex -1) to move SR/keyboard position; no
    visible outline on the whole card box. */
 .ask-user-card:focus { outline: none; }
+.ask-user-card-permission {
+  border-color: color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent, var(--red)) 7%, var(--panel));
+}
 .ask-user-head {
   display: flex;
   justify-content: flex-end;
@@ -37517,6 +37521,9 @@ body.theme-frosted .modal {
   background: color-mix(in srgb, var(--accent, var(--red)) 10%, var(--panel));
 }
 .ask-user-option:disabled { cursor: default; }
+.ask-user-card-permission .ask-user-option {
+  min-height: 48px;
+}
 .ask-user-option > input {
   flex: 0 0 auto;
   width: 16px;
